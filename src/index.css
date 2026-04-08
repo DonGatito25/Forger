@@ -5,7 +5,7 @@
 @tailwind utilities;
 
 @layer base {
-  :root {
+  .light {
     --font-heading: 'Playfair Display', serif;
     --font-body: 'Inter', sans-serif;
 
@@ -44,7 +44,7 @@
     --sidebar-ring: 217.2 91.2% 59.8%;
   }
 
-  .dark {
+  :root {
     --background: 250 25% 7%;
     --foreground: 250 10% 95%;
     --card: 250 20% 11%;

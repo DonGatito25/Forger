@@ -4,22 +4,18 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
-
-const COLORS = [
-  '#8B5CF6', '#6366F1', '#3B82F6', '#06B6D4', '#10B981',
-  '#F59E0B', '#EF4444', '#EC4899', '#F97316', '#84CC16'
-];
+import { COLOR_OPTIONS } from '@/lib/colors';
 
 export default function CreateCategoryDialog({ open, onClose, onSubmit, editData }) {
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
-  const [color, setColor] = useState(COLORS[0]);
+  const [color, setColor] = useState(COLOR_OPTIONS[0]);
 
   useEffect(() => {
     if (open) {
       setName(editData?.name || '');
       setDescription(editData?.description || '');
-      setColor(editData?.color || COLORS[Math.floor(Math.random() * COLORS.length)]);
+      setColor(editData?.color || COLOR_OPTIONS[Math.floor(Math.random() * COLOR_OPTIONS.length)]);
     }
   }, [open, editData]);
 
@@ -59,7 +55,7 @@ export default function CreateCategoryDialog({ open, onClose, onSubmit, editData
           <div className="space-y-2">
             <Label>Color</Label>
             <div className="flex gap-2 flex-wrap">
-              {COLORS.map((c) => (
+              {COLOR_OPTIONS.map((c) => (
                 <button
                   key={c}
                   type="button"

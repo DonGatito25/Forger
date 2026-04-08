@@ -4,6 +4,7 @@ const defaultData = {
   Tab: [],
   Category: [],
   Character: [],
+  Tag: [],
 };
 
 const loadStore = () => {
@@ -16,6 +17,7 @@ const loadStore = () => {
       Tab: Array.isArray(parsed.Tab) ? parsed.Tab : [],
       Category: Array.isArray(parsed.Category) ? parsed.Category : [],
       Character: Array.isArray(parsed.Character) ? parsed.Character : [],
+      Tag: Array.isArray(parsed.Tag) ? parsed.Tag : [],
     };
   } catch {
     return { ...defaultData };
@@ -102,6 +104,12 @@ export const dataClient = {
       create: (data) => create('Character', data),
       update: (id, data) => update('Character', id, data),
       delete: (id) => remove('Character', id),
+    },
+    Tag: {
+      list: (sortKey) => list('Tag', sortKey),
+      create: (data) => create('Tag', data),
+      update: (id, data) => update('Tag', id, data),
+      delete: (id) => remove('Tag', id),
     },
   },
   uploads: {

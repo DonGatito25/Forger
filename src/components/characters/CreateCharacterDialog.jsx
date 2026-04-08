@@ -9,7 +9,7 @@ import { Upload, X } from 'lucide-react';
 import { dataClient } from '@/api/dataClient';
 import AttributeEditor from './AttributeEditor';
 
-export default function CreateCharacterDialog({ open, onClose, onSubmit, categories, editData, defaultCategoryId }) {
+export default function CreateCharacterDialog({ open, onClose, onSubmit, categories, tags = [], editData, defaultCategoryId }) {
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [details, setDetails] = useState('');
@@ -17,6 +17,7 @@ export default function CreateCharacterDialog({ open, onClose, onSubmit, categor
   const [imageUrl, setImageUrl] = useState('');
   const [uploading, setUploading] = useState(false);
   const [attributes, setAttributes] = useState([]);
+  const [tagIds, setTagIds] = useState([]);
 
   useEffect(() => {
     if (open) {
@@ -25,9 +26,18 @@ export default function CreateCharacterDialog({ open, onClose, onSubmit, categor
       setDetails(editData?.details || '');
       setCategoryId(editData?.category_id || defaultCategoryId || '');
       setImageUrl(editData?.image_url || '');
-      setAttributes(editData?.attributes || []);
+      setAttributes(
+        (editData?.attributes || []).map((attr) => ({
+          key: attr.key || '',
+          value: attr.value ?? '',
+          type: attr.type || 'custom',
+        }))
+      );
+      const availableTagIds = new Set(tags.map((t) => t.id));
+      const safeTagIds = (editData?.tag_ids || []).filter((id) => availableTagIds.has(id));
+      setTagIds(safeTagIds);
     }
-  }, [open, editData, defaultCategoryId]);
+  }, [open, editData, defaultCategoryId, tags]);
 
   const handleImageUpload = async (e) => {
     const file = e.target.files?.[0];
@@ -41,7 +51,24 @@ export default function CreateCharacterDialog({ open, onClose, onSubmit, categor
   const handleSubmit = (e) => {
     e.preventDefault();
     if (!name.trim() || !categoryId) return;
-    onSubmit({ name: name.trim(), description: description.trim(), details: details.trim(), category_id: categoryId, image_url: imageUrl, attributes: attributes.filter(a => a.key.trim()) });
+    const normalizedAttributes = attributes
+      .filter((a) => a.key?.trim())
+      .map((a) => ({
+        key: a.key.trim().toLowerCase(),
+        value: a.value,
+        type: a.type || 'custom',
+      }));
+    const availableTagIds = new Set(tags.map((t) => t.id));
+    const safeTagIds = tagIds.filter((id) => availableTagIds.has(id));
+    onSubmit({
+      name: name.trim(),
+      description: description.trim(),
+      details: details.trim(),
+      category_id: categoryId,
+      image_url: imageUrl,
+      attributes: normalizedAttributes,
+      tag_ids: safeTagIds,
+    });
   };
 
   return (
@@ -110,6 +137,38 @@ export default function CreateCharacterDialog({ open, onClose, onSubmit, categor
           </div>
 
           <AttributeEditor attributes={attributes} onChange={setAttributes} />
+
+          <div className="space-y-2">
+            <Label>Tags <span className="text-muted-foreground text-xs">(optional)</span></Label>
+            <div className="flex flex-wrap gap-2">
+              {tags.length === 0 ? (
+                <p className="text-xs text-muted-foreground">No tags created yet.</p>
+              ) : (
+                tags.map((tag) => {
+                  const isSelected = tagIds.includes(tag.id);
+                  return (
+                    <button
+                      key={tag.id}
+                      type="button"
+                      onClick={() => {
+                        setTagIds((prev) =>
+                          isSelected ? prev.filter((id) => id !== tag.id) : [...prev, tag.id]
+                        );
+                      }}
+                      className={`px-2.5 py-1 rounded-full text-xs border transition-all ${
+                        isSelected ? 'text-white border-transparent' : 'text-muted-foreground border-border/60'
+                      }`}
+                      style={{
+                        backgroundColor: isSelected ? tag.color : 'transparent',
+                      }}
+                    >
+                      {tag.name}
+                    </button>
+                  );
+                })
+              )}
+            </div>
+          </div>
 
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => onClose(false)}>Cancel</Button>

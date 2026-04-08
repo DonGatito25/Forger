@@ -12,13 +12,21 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Button } from "@/components/ui/button";
 
-export default function CharacterCard({ character, categories, onEdit, onDelete, onMove }) {
+export default function CharacterCard({ character, categories, tags = [], onEdit, onDelete, onMove, isDragging = false }) {
   const [expanded, setExpanded] = useState(false);
   const currentCategory = categories.find(c => c.id === character.category_id);
   const otherCategories = categories.filter(c => c.id !== character.category_id);
   const hasAttributes = character.attributes?.length > 0;
   const hasDetails = !!character.details;
   const hasMore = hasAttributes || hasDetails;
+  const tagMap = new Map(tags.map((t) => [t.id, t]));
+  const formatValue = (attr) => {
+    if (attr?.type === 'bool') return attr.value ? 'True' : 'False';
+    if (attr?.type === 'multiselect') {
+      return Array.isArray(attr.value) ? attr.value.join(', ') : (attr.value || '');
+    }
+    return attr?.value ?? '';
+  };
 
   return (
     <motion.div
@@ -26,7 +34,9 @@ export default function CharacterCard({ character, categories, onEdit, onDelete,
       initial={{ opacity: 0, y: 10 }}
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0, scale: 0.95 }}
-      className="group bg-card rounded-lg border border-border/60 hover:border-primary/30 hover:shadow-md transition-all duration-200 overflow-hidden"
+      className={`group bg-card rounded-lg border border-border/60 hover:border-primary/30 hover:shadow-md transition-all duration-200 overflow-hidden ${
+        isDragging ? 'shadow-2xl ring-2 ring-primary/30 scale-[1.02] z-50' : ''
+      }`}
     >
       <div className="flex gap-3 p-3">
         {/* Avatar */}
@@ -83,6 +93,27 @@ export default function CharacterCard({ character, categories, onEdit, onDelete,
           {character.description && (
             <p className="text-xs text-muted-foreground mt-0.5 line-clamp-2">{character.description}</p>
           )}
+          {Array.isArray(character.tag_ids) && character.tag_ids.length > 0 && (
+            <div className="flex flex-wrap gap-1.5 mt-2">
+              {character.tag_ids.map((id) => {
+                const tag = tagMap.get(id);
+                if (!tag) return null;
+                return (
+                  <span
+                    key={id}
+                    className="text-[10px] px-2 py-0.5 rounded-full text-white"
+                    style={{
+                      backgroundColor: `${tag.color}20`,
+                      border: `1px solid ${tag.color}`,
+                      color: tag.color
+                    }}
+                  >
+                    {tag.name}
+                  </span>
+                );
+              })}
+            </div>
+          )}
         </div>
       </div>
 
@@ -116,7 +147,7 @@ export default function CharacterCard({ character, categories, onEdit, onDelete,
                       <span className="text-[10px] uppercase tracking-wide text-muted-foreground/60 font-medium truncate">
                         {attr.key}
                       </span>
-                      <span className="text-xs text-foreground truncate">{attr.value}</span>
+                      <span className="text-xs text-foreground truncate">{formatValue(attr)}</span>
                     </div>
                   ))}
                 </div>

@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { dataClient } from '@/api/dataClient';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { DragDropContext } from '@hello-pangea/dnd';
 import { Plus, Pencil, Trash2, ChevronDown } from 'lucide-react';
 import { Button } from "@/components/ui/button";
 import {
@@ -15,6 +16,7 @@ import CreateCategoryDialog from '@/components/characters/CreateCategoryDialog';
 import CreateCharacterDialog from '@/components/characters/CreateCharacterDialog';
 import CreateTabDialog from '@/components/tabs/CreateTabDialog';
 import EmptyState from '@/components/characters/EmptyState';
+import TagsDialog from '@/components/tags/TagsDialog';
 
 export default function Home() {
   const queryClient = useQueryClient();
@@ -24,6 +26,7 @@ export default function Home() {
   const [categoryDialog, setCategoryDialog] = useState({ open: false, editData: null });
   const [characterDialog, setCharacterDialog] = useState({ open: false, editData: null, defaultCategoryId: null });
   const [deleteConfirm, setDeleteConfirm] = useState({ open: false, type: null, item: null });
+  const [tagsDialogOpen, setTagsDialogOpen] = useState(false);
 
   const { data: tabs = [], isLoading: loadingTabs } = useQuery({
     queryKey: ['tabs'],
@@ -42,6 +45,11 @@ export default function Home() {
     queryKey: ['characters'],
     queryFn: () => dataClient.entities.Character.list('sort_order'),
   });
+  const { data: allTags = [], isLoading: loadingTags } = useQuery({
+    queryKey: ['tags'],
+    queryFn: () => dataClient.entities.Tag.list('name'),
+  });
+  const tags = allTags.filter((tag) => String(tag.tab_id) === String(activeTabId));
 
   // Set active tab once data loads
   React.useEffect(() => {
@@ -50,12 +58,16 @@ export default function Home() {
     }
   }, [tabs, activeTabId]);
 
-  const activeTab = tabs.find(t => t.id === activeTabId);
   const activeCategories = categories.filter(c => c.tab_id === activeTabId);
   const activeCharacters = characters.filter(ch => {
     const cat = categories.find(c => c.id === ch.category_id);
     return cat?.tab_id === activeTabId;
   });
+  const getCategoryCharacters = (categoryId) => {
+    return activeCharacters
+      .filter((char) => String(char.category_id) === String(categoryId))
+      .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0));
+  };
 
   // Tab mutations
   const createTab = useMutation({
@@ -152,10 +164,101 @@ export default function Home() {
     },
   });
 
+  const createTag = useMutation({
+    mutationFn: (data) => dataClient.entities.Tag.create({ ...data, tab_id: activeTabId }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['tags'] });
+    },
+  });
+
+  const updateTag = useMutation({
+    mutationFn: ({ id, data }) => dataClient.entities.Tag.update(id, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['tags'] });
+    },
+  });
+
+  const deleteTag = useMutation({
+    mutationFn: async (tag) => {
+      const tagId = tag.id;
+      const affected = characters.filter(
+        (ch) =>
+          Array.isArray(ch.tag_ids) &&
+          ch.tag_ids.includes(tagId) &&
+          String(ch.category_id) &&
+          String(categories.find((c) => c.id === ch.category_id)?.tab_id) === String(activeTabId)
+      );
+      await Promise.all(
+        affected.map((ch) =>
+          dataClient.entities.Character.update(ch.id, {
+            tag_ids: ch.tag_ids.filter((id) => id !== tagId),
+          })
+        )
+      );
+      await dataClient.entities.Tag.delete(tagId);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['tags'] });
+      queryClient.invalidateQueries({ queryKey: ['characters'] });
+    },
+  });
+
   const moveCharacter = useMutation({
-    mutationFn: ({ character, newCategoryId }) => dataClient.entities.Character.update(character.id, { category_id: newCategoryId }),
+    mutationFn: async ({ character, newCategoryId }) => {
+      const sourceId = String(character.category_id);
+      const destId = String(newCategoryId);
+      if (sourceId === destId) return character;
+
+      const sourceList = getCategoryCharacters(sourceId).filter((c) => String(c.id) !== String(character.id));
+      const destList = getCategoryCharacters(destId);
+
+      const updates = [
+        ...sourceList.map((item, index) => dataClient.entities.Character.update(item.id, { sort_order: index })),
+        ...destList.map((item, index) => dataClient.entities.Character.update(item.id, { sort_order: index })),
+        dataClient.entities.Character.update(character.id, { category_id: newCategoryId, sort_order: destList.length }),
+      ];
+      await Promise.all(updates);
+      return character;
+    },
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['characters'] }),
   });
+
+  const handleDragEnd = async (result) => {
+    const { source, destination, draggableId } = result;
+    if (!destination) return;
+    if (source.droppableId === destination.droppableId && source.index === destination.index) return;
+
+    const sourceId = String(source.droppableId);
+    const destId = String(destination.droppableId);
+
+    const sourceList = getCategoryCharacters(sourceId);
+    const destList = sourceId === destId ? sourceList : getCategoryCharacters(destId);
+    const moving = sourceList.find((item) => String(item.id) === String(draggableId));
+    if (!moving) return;
+
+    const newSource = sourceList.filter((item) => String(item.id) !== String(draggableId));
+    const newDest = sourceId === destId ? [...newSource] : [...destList];
+    newDest.splice(destination.index, 0, { ...moving, category_id: destId });
+
+    const updates = [];
+    if (sourceId === destId) {
+      newDest.forEach((item, index) => {
+        updates.push(dataClient.entities.Character.update(item.id, { sort_order: index }));
+      });
+    } else {
+      newSource.forEach((item, index) => {
+        updates.push(dataClient.entities.Character.update(item.id, { sort_order: index }));
+      });
+      newDest.forEach((item, index) => {
+        updates.push(
+          dataClient.entities.Character.update(item.id, { sort_order: index, category_id: destId })
+        );
+      });
+    }
+
+    await Promise.all(updates);
+    queryClient.invalidateQueries({ queryKey: ['characters'] });
+  };
 
   const handleTabSubmit = (data) => {
     if (tabDialog.editData) updateTab.mutate({ id: tabDialog.editData.id, data });
@@ -178,7 +281,7 @@ export default function Home() {
     else deleteCharacter.mutate(deleteConfirm.item);
   };
 
-  if (loadingTabs || loadingCats || loadingChars) {
+  if (loadingTabs || loadingCats || loadingChars || loadingTags) {
     return (
       <div className="fixed inset-0 flex items-center justify-center">
         <div className="w-8 h-8 border-4 border-primary/20 border-t-primary rounded-full animate-spin" />
@@ -273,22 +376,25 @@ export default function Home() {
         ) : !activeTabId ? null : activeCategories.length === 0 ? (
           <EmptyState type="no-categories" onAction={() => setCategoryDialog({ open: true, editData: null })} />
         ) : (
-          <div className="flex gap-5 overflow-x-auto pb-6">
-            {activeCategories.map((cat) => (
-              <CategoryColumn
-                key={cat.id}
-                category={cat}
-                characters={activeCharacters}
-                allCategories={activeCategories}
-                onAddCharacter={(catId) => setCharacterDialog({ open: true, editData: null, defaultCategoryId: catId })}
-                onEditCategory={(cat) => setCategoryDialog({ open: true, editData: cat })}
-                onDeleteCategory={(cat) => setDeleteConfirm({ open: true, type: 'category', item: cat })}
-                onEditCharacter={(char) => setCharacterDialog({ open: true, editData: char, defaultCategoryId: null })}
-                onDeleteCharacter={(char) => setDeleteConfirm({ open: true, type: 'character', item: char })}
-                onMoveCharacter={(char, catId) => moveCharacter.mutate({ character: char, newCategoryId: catId })}
-              />
-            ))}
-          </div>
+          <DragDropContext onDragEnd={handleDragEnd}>
+            <div className="flex gap-5 overflow-x-auto pb-6">
+              {activeCategories.map((cat) => (
+                <CategoryColumn
+                  key={cat.id}
+                  category={cat}
+                  characters={getCategoryCharacters(cat.id)}
+                  allCategories={activeCategories}
+                  tags={tags}
+                  onAddCharacter={(catId) => setCharacterDialog({ open: true, editData: null, defaultCategoryId: catId })}
+                  onEditCategory={(cat) => setCategoryDialog({ open: true, editData: cat })}
+                  onDeleteCategory={(cat) => setDeleteConfirm({ open: true, type: 'category', item: cat })}
+                  onEditCharacter={(char) => setCharacterDialog({ open: true, editData: char, defaultCategoryId: null })}
+                  onDeleteCharacter={(char) => setDeleteConfirm({ open: true, type: 'character', item: char })}
+                  onMoveCharacter={(char, catId) => moveCharacter.mutate({ character: char, newCategoryId: catId })}
+                />
+              ))}
+            </div>
+          </DragDropContext>
         )}
       </main>
 
@@ -310,8 +416,18 @@ export default function Home() {
         onClose={() => setCharacterDialog({ open: false, editData: null, defaultCategoryId: null })}
         onSubmit={handleCharacterSubmit}
         categories={activeCategories}
+        tags={tags}
         editData={characterDialog.editData}
         defaultCategoryId={characterDialog.defaultCategoryId}
+      />
+
+      <TagsDialog
+        open={tagsDialogOpen}
+        onClose={() => setTagsDialogOpen(false)}
+        tags={tags}
+        onCreate={(data) => createTag.mutate(data)}
+        onUpdate={(id, data) => updateTag.mutate({ id, data })}
+        onDelete={(tag) => deleteTag.mutate(tag)}
       />
 
       <AlertDialog open={deleteConfirm.open} onOpenChange={(open) => !open && setDeleteConfirm({ open: false, type: null, item: null })}>
@@ -336,6 +452,16 @@ export default function Home() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      <Button
+        type="button"
+        variant="secondary"
+        onClick={() => activeTabId && setTagsDialogOpen(true)}
+        disabled={!activeTabId}
+        className="fixed bottom-6 left-6 shadow-lg"
+      >
+        Tags
+      </Button>
     </div>
   );
 }

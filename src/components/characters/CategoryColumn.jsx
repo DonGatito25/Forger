@@ -1,5 +1,6 @@
 import React from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
+import { Droppable, Draggable } from '@hello-pangea/dnd';
 import { Plus, MoreHorizontal, Pencil, Trash2 } from 'lucide-react';
 import { Button } from "@/components/ui/button";
 import {
@@ -14,6 +15,7 @@ export default function CategoryColumn({
   category,
   characters,
   allCategories,
+  tags,
   onAddCharacter,
   onEditCategory,
   onDeleteCategory,
@@ -22,6 +24,7 @@ export default function CategoryColumn({
   onMoveCharacter
 }) {
   const categoryCharacters = characters.filter(c => c.category_id === category.id);
+  const droppableId = String(category.id);
 
   return (
     <motion.div
@@ -62,26 +65,49 @@ export default function CategoryColumn({
       </div>
 
       {/* Characters list */}
-      <div className="flex-1 px-3 pb-3 space-y-2 overflow-y-auto max-h-[60vh]">
-        <AnimatePresence mode="popLayout">
-          {categoryCharacters.map((char) => (
-            <CharacterCard
-              key={char.id}
-              character={char}
-              categories={allCategories}
-              onEdit={onEditCharacter}
-              onDelete={onDeleteCharacter}
-              onMove={onMoveCharacter}
-            />
-          ))}
-        </AnimatePresence>
+      <Droppable droppableId={droppableId}>
+        {(provided, snapshot) => (
+          <div
+            ref={provided.innerRef}
+            {...provided.droppableProps}
+            className={`flex-1 px-3 pb-3 space-y-2 overflow-y-auto max-h-[60vh] ${
+              snapshot.isDraggingOver ? 'bg-primary/5' : ''
+            }`}
+          >
+            <AnimatePresence mode="popLayout">
+              {categoryCharacters.map((char, index) => (
+                <Draggable key={char.id} draggableId={String(char.id)} index={index}>
+                  {(dragProvided, dragSnapshot) => (
+                    <div
+                      ref={dragProvided.innerRef}
+                      {...dragProvided.draggableProps}
+                      {...dragProvided.dragHandleProps}
+                      className={dragSnapshot.isDragging ? 'relative z-50' : ''}
+                    >
+                      <CharacterCard
+                        character={char}
+                        categories={allCategories}
+                        tags={tags}
+                        onEdit={onEditCharacter}
+                        onDelete={onDeleteCharacter}
+                        onMove={onMoveCharacter}
+                        isDragging={dragSnapshot.isDragging}
+                      />
+                    </div>
+                  )}
+                </Draggable>
+              ))}
+            </AnimatePresence>
+            {provided.placeholder}
 
-        {categoryCharacters.length === 0 && (
-          <div className="text-center py-8 text-muted-foreground/60">
-            <p className="text-sm">No characters yet</p>
+            {categoryCharacters.length === 0 && (
+              <div className="text-center py-8 text-muted-foreground/60">
+                <p className="text-sm">No characters yet</p>
+              </div>
+            )}
           </div>
         )}
-      </div>
+      </Droppable>
 
       {/* Add button */}
       <div className="p-3 pt-0">
