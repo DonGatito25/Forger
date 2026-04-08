@@ -6,7 +6,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Upload, X } from 'lucide-react';
-import { base44 } from '@/api/base44Client';
+import { dataClient } from '@/api/dataClient';
 import AttributeEditor from './AttributeEditor';
 
 export default function CreateCharacterDialog({ open, onClose, onSubmit, categories, editData, defaultCategoryId }) {
@@ -33,7 +33,7 @@ export default function CreateCharacterDialog({ open, onClose, onSubmit, categor
     const file = e.target.files?.[0];
     if (!file) return;
     setUploading(true);
-    const { file_url } = await base44.integrations.Core.UploadFile({ file });
+    const { file_url } = await dataClient.uploads.uploadImage(file);
     setImageUrl(file_url);
     setUploading(false);
   };

@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react';
-import { base44 } from '@/api/base44Client';
+import React, { useState } from 'react';
+import { dataClient } from '@/api/dataClient';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Plus, Pencil, Trash2, ChevronDown } from 'lucide-react';
 import { Button } from "@/components/ui/button";
@@ -27,7 +27,7 @@ export default function Home() {
 
   const { data: tabs = [], isLoading: loadingTabs } = useQuery({
     queryKey: ['tabs'],
-    queryFn: () => base44.entities.Tab.list('sort_order'),
+    queryFn: () => dataClient.entities.Tab.list('sort_order'),
     onSuccess: (data) => {
       if (data.length > 0 && !activeTabId) setActiveTabId(data[0].id);
     }
@@ -35,12 +35,12 @@ export default function Home() {
 
   const { data: categories = [], isLoading: loadingCats } = useQuery({
     queryKey: ['categories'],
-    queryFn: () => base44.entities.Category.list('sort_order'),
+    queryFn: () => dataClient.entities.Category.list('sort_order'),
   });
 
   const { data: characters = [], isLoading: loadingChars } = useQuery({
     queryKey: ['characters'],
-    queryFn: () => base44.entities.Character.list('sort_order'),
+    queryFn: () => dataClient.entities.Character.list('sort_order'),
   });
 
   // Set active tab once data loads
@@ -59,7 +59,7 @@ export default function Home() {
 
   // Tab mutations
   const createTab = useMutation({
-    mutationFn: (data) => base44.entities.Tab.create({ ...data, sort_order: tabs.length }),
+    mutationFn: (data) => dataClient.entities.Tab.create({ ...data, sort_order: tabs.length }),
     onSuccess: (newTab) => {
       queryClient.invalidateQueries({ queryKey: ['tabs'] });
       setTabDialog({ open: false, editData: null });
@@ -68,7 +68,7 @@ export default function Home() {
   });
 
   const updateTab = useMutation({
-    mutationFn: ({ id, data }) => base44.entities.Tab.update(id, data),
+    mutationFn: ({ id, data }) => dataClient.entities.Tab.update(id, data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['tabs'] });
       setTabDialog({ open: false, editData: null });
@@ -80,10 +80,10 @@ export default function Home() {
       const catsInTab = categories.filter(c => c.tab_id === tab.id);
       for (const cat of catsInTab) {
         const charsInCat = characters.filter(ch => ch.category_id === cat.id);
-        for (const ch of charsInCat) await base44.entities.Character.delete(ch.id);
-        await base44.entities.Category.delete(cat.id);
+        for (const ch of charsInCat) await dataClient.entities.Character.delete(ch.id);
+        await dataClient.entities.Category.delete(cat.id);
       }
-      await base44.entities.Tab.delete(tab.id);
+      await dataClient.entities.Tab.delete(tab.id);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['tabs'] });
@@ -96,7 +96,7 @@ export default function Home() {
 
   // Category mutations
   const createCategory = useMutation({
-    mutationFn: (data) => base44.entities.Category.create({ ...data, tab_id: activeTabId, sort_order: activeCategories.length }),
+    mutationFn: (data) => dataClient.entities.Category.create({ ...data, tab_id: activeTabId, sort_order: activeCategories.length }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['categories'] });
       setCategoryDialog({ open: false, editData: null });
@@ -104,7 +104,7 @@ export default function Home() {
   });
 
   const updateCategory = useMutation({
-    mutationFn: ({ id, data }) => base44.entities.Category.update(id, data),
+    mutationFn: ({ id, data }) => dataClient.entities.Category.update(id, data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['categories'] });
       setCategoryDialog({ open: false, editData: null });
@@ -114,8 +114,8 @@ export default function Home() {
   const deleteCategory = useMutation({
     mutationFn: async (category) => {
       const charsInCat = characters.filter(c => c.category_id === category.id);
-      for (const ch of charsInCat) await base44.entities.Character.delete(ch.id);
-      await base44.entities.Category.delete(category.id);
+      for (const ch of charsInCat) await dataClient.entities.Character.delete(ch.id);
+      await dataClient.entities.Category.delete(category.id);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['categories'] });
@@ -128,7 +128,7 @@ export default function Home() {
   const createCharacter = useMutation({
     mutationFn: (data) => {
       const catChars = characters.filter(c => c.category_id === data.category_id);
-      return base44.entities.Character.create({ ...data, sort_order: catChars.length });
+      return dataClient.entities.Character.create({ ...data, sort_order: catChars.length });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['characters'] });
@@ -137,7 +137,7 @@ export default function Home() {
   });
 
   const updateCharacter = useMutation({
-    mutationFn: ({ id, data }) => base44.entities.Character.update(id, data),
+    mutationFn: ({ id, data }) => dataClient.entities.Character.update(id, data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['characters'] });
       setCharacterDialog({ open: false, editData: null, defaultCategoryId: null });
@@ -145,7 +145,7 @@ export default function Home() {
   });
 
   const deleteCharacter = useMutation({
-    mutationFn: (ch) => base44.entities.Character.delete(ch.id),
+    mutationFn: (ch) => dataClient.entities.Character.delete(ch.id),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['characters'] });
       setDeleteConfirm({ open: false, type: null, item: null });
@@ -153,7 +153,7 @@ export default function Home() {
   });
 
   const moveCharacter = useMutation({
-    mutationFn: ({ character, newCategoryId }) => base44.entities.Character.update(character.id, { category_id: newCategoryId }),
+    mutationFn: ({ character, newCategoryId }) => dataClient.entities.Character.update(character.id, { category_id: newCategoryId }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['characters'] }),
   });
 
