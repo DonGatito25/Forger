@@ -1,0 +1,22 @@
+{
+  "name": "Tab",
+  "type": "object",
+  "properties": {
+    "name": {
+      "type": "string",
+      "description": "Name of the tab"
+    },
+    "description": {
+      "type": "string",
+      "description": "Optional description of the tab"
+    },
+    "sort_order": {
+      "type": "number",
+      "description": "Order of the tab",
+      "default": 0
+    }
+  },
+  "required": [
+    "name"
+  ]
+}
