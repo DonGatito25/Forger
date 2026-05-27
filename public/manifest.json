@@ -1,6 +1,6 @@
 {
-  "name": "Forge",
-  "short_name": "Forge",
+  "name": "Forger",
+  "short_name": "Forger",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#f5f4f9",

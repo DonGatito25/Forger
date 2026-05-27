@@ -83,9 +83,34 @@
 @layer base {
   * {
     @apply border-border outline-ring/50;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(71, 85, 105, 0.75) rgba(15, 23, 42, 0.22);
   }
 
   body {
     @apply bg-background text-foreground;
+  }
+
+  *::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+
+  *::-webkit-scrollbar-track {
+    background: rgba(15, 23, 42, 0.22);
+  }
+
+  *::-webkit-scrollbar-thumb {
+    border: 2px solid rgba(15, 23, 42, 0.22);
+    border-radius: 9999px;
+    background: rgba(71, 85, 105, 0.72);
+  }
+
+  *::-webkit-scrollbar-thumb:hover {
+    background: rgba(71, 85, 105, 0.82);
+  }
+
+  *::-webkit-scrollbar-corner {
+    background: rgba(15, 23, 42, 0.22);
   }
 }

@@ -12,10 +12,26 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Button } from "@/components/ui/button";
 
-export default function CharacterCard({ character, categories, tags = [], onEdit, onDelete, onMove, isDragging = false }) {
+export default function CharacterCard({
+  character,
+  categories,
+  tags = [],
+  onEdit,
+  onDelete,
+  onMove,
+  isDragging = false,
+  isHighlighted = false,
+  onProxyDragStart,
+  onProxySelect,
+}) {
   const [expanded, setExpanded] = useState(false);
+  const isProxy = !!character.is_proxy;
   const currentCategory = categories.find(c => c.id === character.category_id);
-  const otherCategories = categories.filter(c => c.id !== character.category_id);
+  const otherCategories = categories.filter((c) => {
+    if (String(c.id) === String(character.category_id)) return false;
+    if (isProxy && String(c.id) === String(character.original_category_id)) return false;
+    return true;
+  });
   const hasAttributes = character.attributes?.length > 0;
   const hasDetails = !!character.details;
   const hasMore = hasAttributes || hasDetails;
@@ -34,8 +50,17 @@ export default function CharacterCard({ character, categories, tags = [], onEdit
       initial={{ opacity: 0, y: 10 }}
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0, scale: 0.95 }}
-      className={`group bg-card rounded-lg border border-border/60 hover:border-primary/30 hover:shadow-md transition-all duration-200 overflow-hidden ${
+      id={`character-${character.id}`}
+      onMouseDown={(event) => onProxyDragStart?.(character, event)}
+      onClick={() => {
+        if (isProxy) onProxySelect?.(character);
+      }}
+      className={`group bg-card rounded-lg border hover:border-primary/30 hover:shadow-md transition-all duration-200 overflow-hidden ${
+        isProxy ? 'border-dashed border-border/90 cursor-pointer' : 'border-border/60'
+      } ${
         isDragging ? 'shadow-2xl ring-2 ring-primary/30 scale-[1.02] z-50' : ''
+      } ${
+        isHighlighted ? 'ring-2 ring-primary/60 shadow-lg shadow-primary/10 border-primary/40' : ''
       }`}
     >
       <div className="flex gap-3 p-3">
@@ -61,18 +86,26 @@ export default function CharacterCard({ character, categories, tags = [], onEdit
                   variant="ghost"
                   size="icon"
                   className="h-6 w-6 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0"
+                  onClick={(event) => event.stopPropagation()}
                 >
                   <MoreHorizontal className="w-3.5 h-3.5" />
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
-                <DropdownMenuItem onClick={() => onEdit(character)}>
-                  <Pencil className="w-3.5 h-3.5 mr-2" /> Edit
-                </DropdownMenuItem>
+                {!isProxy && (
+                  <DropdownMenuItem onClick={() => onEdit(character)}>
+                    <Pencil className="w-3.5 h-3.5 mr-2" /> Edit
+                  </DropdownMenuItem>
+                )}
+                {isProxy && (
+                  <DropdownMenuItem onClick={() => onProxySelect?.(character)}>
+                    <User className="w-3.5 h-3.5 mr-2" /> Show Original
+                  </DropdownMenuItem>
+                )}
                 {otherCategories.length > 0 && (
                   <DropdownMenuSub>
                     <DropdownMenuSubTrigger>
-                      <MoveRight className="w-3.5 h-3.5 mr-2" /> Move to
+                      <MoveRight className="w-3.5 h-3.5 mr-2" /> {isProxy ? 'Move Proxy To' : 'Move to'}
                     </DropdownMenuSubTrigger>
                     <DropdownMenuSubContent>
                       {otherCategories.map((cat) => (
@@ -91,9 +124,12 @@ export default function CharacterCard({ character, categories, tags = [], onEdit
             </DropdownMenu>
           </div>
           {character.description && (
-            <p className="text-xs text-muted-foreground mt-0.5 line-clamp-2">{character.description}</p>
+            !isProxy ? <p className="text-xs text-muted-foreground mt-0.5 line-clamp-2">{character.description}</p> : null
           )}
-          {Array.isArray(character.tag_ids) && character.tag_ids.length > 0 && (
+          {isProxy && (
+            <p className="mt-1 text-[11px] text-muted-foreground">Proxy to original</p>
+          )}
+          {!isProxy && Array.isArray(character.tag_ids) && character.tag_ids.length > 0 && (
             <div className="flex flex-wrap gap-1.5 mt-2">
               {character.tag_ids.map((id) => {
                 const tag = tagMap.get(id);
@@ -118,7 +154,7 @@ export default function CharacterCard({ character, categories, tags = [], onEdit
       </div>
 
       {/* Expand toggle */}
-      {hasMore && (
+      {!isProxy && hasMore && (
         <button
           onClick={() => setExpanded(!expanded)}
           className="w-full flex items-center justify-center gap-1 py-1 text-xs text-muted-foreground/60 hover:text-muted-foreground hover:bg-muted/30 transition-colors border-t border-border/30"
@@ -130,7 +166,7 @@ export default function CharacterCard({ character, categories, tags = [], onEdit
 
       {/* Expanded content */}
       <AnimatePresence>
-        {expanded && hasMore && (
+        {expanded && !isProxy && hasMore && (
           <motion.div
             initial={{ height: 0, opacity: 0 }}
             animate={{ height: 'auto', opacity: 1 }}

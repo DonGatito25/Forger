@@ -5,6 +5,10 @@ const defaultData = {
   Category: [],
   Character: [],
   Tag: [],
+  Event: [],
+  Metric: [],
+  EventType: [],
+  Concept: [],
 };
 
 const loadStore = () => {
@@ -18,6 +22,10 @@ const loadStore = () => {
       Category: Array.isArray(parsed.Category) ? parsed.Category : [],
       Character: Array.isArray(parsed.Character) ? parsed.Character : [],
       Tag: Array.isArray(parsed.Tag) ? parsed.Tag : [],
+      Event: Array.isArray(parsed.Event) ? parsed.Event : [],
+      Metric: Array.isArray(parsed.Metric) ? parsed.Metric : [],
+      EventType: Array.isArray(parsed.EventType) ? parsed.EventType : [],
+      Concept: Array.isArray(parsed.Concept) ? parsed.Concept : [],
     };
   } catch {
     return { ...defaultData };
@@ -110,6 +118,30 @@ export const dataClient = {
       create: (data) => create('Tag', data),
       update: (id, data) => update('Tag', id, data),
       delete: (id) => remove('Tag', id),
+    },
+    Event: {
+      list: (sortKey) => list('Event', sortKey),
+      create: (data) => create('Event', data),
+      update: (id, data) => update('Event', id, data),
+      delete: (id) => remove('Event', id),
+    },
+    Metric: {
+      list: (sortKey) => list('Metric', sortKey),
+      create: (data) => create('Metric', data),
+      update: (id, data) => update('Metric', id, data),
+      delete: (id) => remove('Metric', id),
+    },
+    EventType: {
+      list: (sortKey) => list('EventType', sortKey),
+      create: (data) => create('EventType', data),
+      update: (id, data) => update('EventType', id, data),
+      delete: (id) => remove('EventType', id),
+    },
+    Concept: {
+      list: (sortKey) => list('Concept', sortKey),
+      create: (data) => create('Concept', data),
+      update: (id, data) => update('Concept', id, data),
+      delete: (id) => remove('Concept', id),
     },
   },
   uploads: {

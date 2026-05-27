@@ -16,12 +16,18 @@ export default function CategoryColumn({
   characters,
   allCategories,
   tags,
+  highlightedId,
+  isFiltering,
+  isReorderTarget = false,
+  onReorderDragStart,
   onAddCharacter,
   onEditCategory,
   onDeleteCategory,
   onEditCharacter,
   onDeleteCharacter,
-  onMoveCharacter
+  onMoveCharacter,
+  onProxyDragStart,
+  onProxySelect,
 }) {
   const categoryCharacters = characters.filter(c => c.category_id === category.id);
   const droppableId = String(category.id);
@@ -31,10 +37,20 @@ export default function CategoryColumn({
       layout
       initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
-      className="bg-secondary/30 rounded-xl border border-border/40 flex flex-col min-w-[300px] max-w-[360px] w-full"
+      className={`bg-secondary/30 rounded-xl border flex min-h-0 max-h-full flex-col min-w-[300px] max-w-[360px] w-full transition-all ${
+        isReorderTarget ? 'border-primary/60 shadow-lg shadow-primary/10' : 'border-border/40'
+      }`}
     >
       {/* Header */}
-      <div className="p-4 pb-3 flex items-center justify-between">
+      <div
+        className="p-4 pb-3 flex items-center justify-between"
+        draggable
+        onDragStart={(event) => {
+          event.dataTransfer.effectAllowed = 'move';
+          event.dataTransfer.setData('text/plain', String(category.id));
+          onReorderDragStart?.();
+        }}
+      >
         <div className="flex items-center gap-2.5 min-w-0">
           <div className="w-3 h-3 rounded-full flex-shrink-0" style={{ backgroundColor: category.color }} />
           <div className="min-w-0">
@@ -49,7 +65,13 @@ export default function CategoryColumn({
         </div>
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <Button variant="ghost" size="icon" className="h-7 w-7 flex-shrink-0">
+            <Button
+              variant="ghost"
+              size="icon"
+              draggable={false}
+              onDragStart={(event) => event.stopPropagation()}
+              className="h-7 w-7 flex-shrink-0"
+            >
               <MoreHorizontal className="w-4 h-4" />
             </Button>
           </DropdownMenuTrigger>
@@ -70,7 +92,9 @@ export default function CategoryColumn({
           <div
             ref={provided.innerRef}
             {...provided.droppableProps}
-            className={`flex-1 px-3 pb-3 space-y-2 overflow-y-auto max-h-[60vh] ${
+            data-category-dropzone="true"
+            data-category-id={category.id}
+            className={`flex-1 min-h-0 px-3 pb-3 space-y-2 overflow-y-auto ${
               snapshot.isDraggingOver ? 'bg-primary/5' : ''
             }`}
           >
@@ -84,7 +108,7 @@ export default function CategoryColumn({
                       {...dragProvided.dragHandleProps}
                       className={dragSnapshot.isDragging ? 'relative z-50' : ''}
                     >
-                      <CharacterCard
+                  <CharacterCard
                         character={char}
                         categories={allCategories}
                         tags={tags}
@@ -92,6 +116,9 @@ export default function CategoryColumn({
                         onDelete={onDeleteCharacter}
                         onMove={onMoveCharacter}
                         isDragging={dragSnapshot.isDragging}
+                        isHighlighted={String(highlightedId) === String(char.id)}
+                        onProxyDragStart={onProxyDragStart}
+                        onProxySelect={onProxySelect}
                       />
                     </div>
                   )}
@@ -102,7 +129,7 @@ export default function CategoryColumn({
 
             {categoryCharacters.length === 0 && (
               <div className="text-center py-8 text-muted-foreground/60">
-                <p className="text-sm">No characters yet</p>
+                <p className="text-sm">{isFiltering ? 'No matches' : 'No characters yet'}</p>
               </div>
             )}
           </div>
