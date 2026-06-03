@@ -3,7 +3,7 @@ import { dataClient } from '@/api/dataClient';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { DragDropContext } from '@hello-pangea/dnd';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { Plus, Pencil, Trash2, ChevronDown, Search, X, User, Menu, Clock3, Tags as TagsIcon, PanelTopOpen, ArrowLeft, Lightbulb } from 'lucide-react';
+import { Plus, Pencil, Trash2, ChevronDown, Search, X, User, Menu, Clock3, Tags as TagsIcon, PanelTopOpen, ArrowLeft, Lightbulb, Settings as SettingsIcon, FolderOutput, Download, Upload } from 'lucide-react';
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -14,15 +14,31 @@ import {
   Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle,
 } from "@/components/ui/sheet";
 import {
+  Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle,
+} from "@/components/ui/dialog";
+import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import CategoryColumn from '@/components/characters/CategoryColumn';
 import CreateCategoryDialog from '@/components/characters/CreateCategoryDialog';
 import CreateCharacterDialog from '@/components/characters/CreateCharacterDialog';
+import CreateSubTabDialog from '@/components/tabs/CreateSubTabDialog';
 import CreateTabDialog from '@/components/tabs/CreateTabDialog';
 import EmptyState from '@/components/characters/EmptyState';
 import TagsDialog from '@/components/tags/TagsDialog';
+import { toast } from '@/components/ui/use-toast';
 import { COLOR_OPTIONS } from '@/lib/colors';
+import {
+  DIAGRAM_STORAGE_KEY,
+  DIAGRAM_TOOL_STORAGE_KEY,
+  EXPORT_FILE_TYPE,
+  EXPORT_FILE_VERSION,
+  mergeImportedStory,
+  parseImportFile,
+  sanitizeExportFileName,
+} from '@/lib/export-files';
+import { buildReturnState, getScopedSubTabs, getSubTabScopeKey } from '@/lib/subtabs';
 
 const DIAGRAM_BOARD_WIDTH = 4800;
 const DIAGRAM_BOARD_HEIGHT = 3200;
@@ -30,8 +46,6 @@ const DIAGRAM_NODE_WIDTH = 176;
 const DIAGRAM_NODE_HEIGHT = 84;
 const DIAGRAM_MIN_ZOOM = 0.45;
 const DIAGRAM_MAX_ZOOM = 2.2;
-const DIAGRAM_STORAGE_KEY = 'forge_diagram_v1';
-const DIAGRAM_TOOL_STORAGE_KEY = 'forge_diagram_tools_v1';
 const DIAGRAM_ARROW_SIZE = 16;
 const DEFAULT_DIAGRAM_TOOL_GROUPS = [
   {
@@ -231,9 +245,10 @@ const loadDiagramToolGroups = () => {
   }
 };
 
-const createDiagramCanvas = (tabId, name = 'Main Canvas') => ({
+const createDiagramCanvas = (tabId, subTabId, name = 'Main Canvas') => ({
   id: createDiagramConfigId('canvas'),
   tabId,
+  subTabId,
   name,
 });
 
@@ -241,11 +256,12 @@ const normalizeDiagramCanvases = (canvases) =>
   (Array.isArray(canvases) ? canvases : []).map((canvas, index) => ({
     id: canvas?.id || createDiagramConfigId('canvas'),
     tabId: canvas?.tabId ?? null,
+    subTabId: canvas?.subTabId ?? null,
     name: canvas?.name || (index === 0 ? 'Main Canvas' : `Canvas ${index + 1}`),
   }));
 
 const loadDiagramState = () => {
-  const emptyState = { nodes: [], edges: [], canvases: [], activeCanvasByTab: {} };
+  const emptyState = { nodes: [], edges: [], canvases: [], activeCanvasByScope: {} };
   if (typeof window === 'undefined') return emptyState;
   try {
     const raw = window.localStorage.getItem(DIAGRAM_STORAGE_KEY);
@@ -254,55 +270,71 @@ const loadDiagramState = () => {
     const parsedNodes = Array.isArray(parsed.nodes) ? parsed.nodes : [];
     const parsedEdges = Array.isArray(parsed.edges) ? parsed.edges : [];
     const parsedCanvases = normalizeDiagramCanvases(parsed.canvases);
-    const parsedActiveCanvasByTab =
-      parsed.activeCanvasByTab && typeof parsed.activeCanvasByTab === 'object' ? parsed.activeCanvasByTab : {};
+    const parsedActiveCanvasByScope =
+      parsed.activeCanvasByScope && typeof parsed.activeCanvasByScope === 'object'
+        ? parsed.activeCanvasByScope
+        : parsed.activeCanvasByTab && typeof parsed.activeCanvasByTab === 'object'
+        ? parsed.activeCanvasByTab
+        : {};
 
     if (parsedCanvases.length > 0) {
-      const canvasesByTab = new Map();
+      const canvasesByScope = new Map();
       parsedCanvases.forEach((canvas) => {
-        if (!canvasesByTab.has(String(canvas.tabId))) {
-          canvasesByTab.set(String(canvas.tabId), canvas.id);
+        const scopeKey = getSubTabScopeKey(canvas.tabId, canvas.subTabId);
+        if (!canvasesByScope.has(scopeKey)) {
+          canvasesByScope.set(scopeKey, canvas.id);
         }
       });
 
       const nextNodes = parsedNodes.map((node) => ({
         ...node,
-        canvasId: node.canvasId || canvasesByTab.get(String(node.tabId)) || null,
+        subTabId: node?.subTabId ?? null,
+        canvasId: node.canvasId || canvasesByScope.get(getSubTabScopeKey(node.tabId, node.subTabId)) || null,
       }));
       const nextEdges = parsedEdges.map((edge) => ({
         ...edge,
-        canvasId: edge.canvasId || canvasesByTab.get(String(edge.tabId)) || null,
+        subTabId: edge?.subTabId ?? null,
+        canvasId: edge.canvasId || canvasesByScope.get(getSubTabScopeKey(edge.tabId, edge.subTabId)) || null,
       }));
 
       return {
         nodes: nextNodes,
         edges: nextEdges,
         canvases: parsedCanvases,
-        activeCanvasByTab: parsedActiveCanvasByTab,
+        activeCanvasByScope: parsedActiveCanvasByScope,
       };
     }
 
-    const tabIds = Array.from(
+    const scopes = Array.from(
       new Set(
-        [...parsedNodes.map((node) => node?.tabId), ...parsedEdges.map((edge) => edge?.tabId)].filter(
-          (tabId) => tabId !== null && tabId !== undefined
-        )
+        [...parsedNodes, ...parsedEdges]
+          .filter((item) => item?.tabId !== null && item?.tabId !== undefined)
+          .map((item) => getSubTabScopeKey(item?.tabId, item?.subTabId))
       )
     );
-    const canvases = tabIds.map((tabId) => createDiagramCanvas(tabId, 'Main Canvas'));
-    const firstCanvasByTab = new Map(canvases.map((canvas) => [String(canvas.tabId), canvas.id]));
+    const canvases = scopes.map((scope) => {
+      const [tabId, subTabId] = scope.split(':');
+      return createDiagramCanvas(tabId, subTabId || null, 'Main Canvas');
+    });
+    const firstCanvasByScope = new Map(
+      canvases.map((canvas) => [getSubTabScopeKey(canvas.tabId, canvas.subTabId), canvas.id])
+    );
 
     return {
       nodes: parsedNodes.map((node) => ({
         ...node,
-        canvasId: firstCanvasByTab.get(String(node.tabId)) || null,
+        subTabId: node?.subTabId ?? null,
+        canvasId: firstCanvasByScope.get(getSubTabScopeKey(node.tabId, node.subTabId)) || null,
       })),
       edges: parsedEdges.map((edge) => ({
         ...edge,
-        canvasId: firstCanvasByTab.get(String(edge.tabId)) || null,
+        subTabId: edge?.subTabId ?? null,
+        canvasId: firstCanvasByScope.get(getSubTabScopeKey(edge.tabId, edge.subTabId)) || null,
       })),
       canvases,
-      activeCanvasByTab: Object.fromEntries(canvases.map((canvas) => [String(canvas.tabId), canvas.id])),
+      activeCanvasByScope: Object.fromEntries(
+        canvases.map((canvas) => [getSubTabScopeKey(canvas.tabId, canvas.subTabId), canvas.id])
+      ),
     };
   } catch {
     return emptyState;
@@ -405,6 +437,7 @@ const getFamilyEdgeSummary = (edge, nodeMap, toolConfig = null) => {
     : `${parentName} is the parent of ${childName}`;
 };
 
+
 export default function Home({ mode = 'home' }) {
   const location = useLocation();
   const navigate = useNavigate();
@@ -413,11 +446,14 @@ export default function Home({ mode = 'home' }) {
   const diagramMode = mode === 'diagram';
 
   const [activeTabId, setActiveTabId] = useState(null);
+  const [activeSubTabId, setActiveSubTabId] = useState(null);
   const [tabDialog, setTabDialog] = useState({ open: false, editData: null });
+  const [subTabDialog, setSubTabDialog] = useState({ open: false, editData: null });
   const [categoryDialog, setCategoryDialog] = useState({ open: false, editData: null });
   const [characterDialog, setCharacterDialog] = useState({ open: false, editData: null, defaultCategoryId: null });
   const [deleteConfirm, setDeleteConfirm] = useState({ open: false, type: null, item: null });
   const [tagsDialogOpen, setTagsDialogOpen] = useState(false);
+  const [transferDialogOpen, setTransferDialogOpen] = useState(false);
   const [homeSidebarOpen, setHomeSidebarOpen] = useState(false);
   const [globalQuery, setGlobalQuery] = useState('');
   const [localQuery, setLocalQuery] = useState('');
@@ -429,7 +465,7 @@ export default function Home({ mode = 'home' }) {
   const [diagramToolManagerOpen, setDiagramToolManagerOpen] = useState(false);
   const [diagramCanvasDockOpen, setDiagramCanvasDockOpen] = useState(false);
   const [diagramCanvases, setDiagramCanvases] = useState(initialDiagramState.canvases);
-  const [activeDiagramCanvasByTab, setActiveDiagramCanvasByTab] = useState(initialDiagramState.activeCanvasByTab);
+  const [activeDiagramCanvasByScope, setActiveDiagramCanvasByScope] = useState(initialDiagramState.activeCanvasByScope);
   const [diagramNodes, setDiagramNodes] = useState(initialDiagramState.nodes);
   const [diagramEdges, setDiagramEdges] = useState(initialDiagramState.edges);
   const [selectedDiagramToolId, setSelectedDiagramToolId] = useState(null);
@@ -437,11 +473,16 @@ export default function Home({ mode = 'home' }) {
   const [selectedDiagramEdgeId, setSelectedDiagramEdgeId] = useState(null);
   const [diagramDrag, setDiagramDrag] = useState(null);
   const [diagramViewport, setDiagramViewport] = useState({ x: 420, y: 240, zoom: 1 });
+  const [exportingTab, setExportingTab] = useState(false);
+  const [importingTab, setImportingTab] = useState(false);
+  const [storyImportConfirmOpen, setStoryImportConfirmOpen] = useState(false);
+  const [pendingStoryImportFile, setPendingStoryImportFile] = useState(null);
   const highlightTimeoutRef = useRef(null);
   const highlightScrollRef = useRef(null);
   const diagramBoardRef = useRef(null);
   const diagramSidebarRef = useRef(null);
   const returnTabAppliedRef = useRef(false);
+  const importFileInputRef = useRef(null);
 
   const { data: tabs = [], isLoading: loadingTabs } = useQuery({
     queryKey: ['tabs'],
@@ -455,6 +496,10 @@ export default function Home({ mode = 'home' }) {
     queryKey: ['categories'],
     queryFn: () => dataClient.entities.Category.list('sort_order'),
   });
+  const { data: subTabs = [], isLoading: loadingSubTabs } = useQuery({
+    queryKey: ['sub-tabs'],
+    queryFn: () => dataClient.entities.SubTab.list('sort_order'),
+  });
 
   const { data: characters = [], isLoading: loadingChars } = useQuery({
     queryKey: ['characters'],
@@ -465,6 +510,15 @@ export default function Home({ mode = 'home' }) {
     queryFn: () => dataClient.entities.Tag.list('name'),
   });
   const tags = allTags.filter((tag) => String(tag.tab_id) === String(activeTabId));
+  const activeSubTabs = useMemo(() => getScopedSubTabs(subTabs, activeTabId), [subTabs, activeTabId]);
+  const activeSubTab = useMemo(
+    () => activeSubTabs.find((subTab) => String(subTab.id) === String(activeSubTabId)) || activeSubTabs[0] || null,
+    [activeSubTabs, activeSubTabId]
+  );
+  const activeScopeKey = useMemo(
+    () => getSubTabScopeKey(activeTabId, activeSubTab?.id || activeSubTabId),
+    [activeTabId, activeSubTab, activeSubTabId]
+  );
 
   // Set active tab once data loads
   React.useEffect(() => {
@@ -475,24 +529,43 @@ export default function Home({ mode = 'home' }) {
 
   React.useEffect(() => {
     const requestedTabId = location.state?.activeTabId;
+    const requestedSubTabId = location.state?.activeSubTabId;
     if (!requestedTabId) {
       returnTabAppliedRef.current = false;
       return;
     }
-    if (tabs.length === 0) return;
+    if (tabs.length === 0 || subTabs.length === 0) return;
     if (returnTabAppliedRef.current) return;
     if (!tabs.some((tab) => String(tab.id) === String(requestedTabId))) return;
     returnTabAppliedRef.current = true;
     if (String(activeTabId) !== String(requestedTabId)) {
       setActiveTabId(requestedTabId);
     }
+    const requestedSubTab = getScopedSubTabs(subTabs, requestedTabId).find(
+      (subTab) => String(subTab.id) === String(requestedSubTabId)
+    );
+    if (requestedSubTab && String(activeSubTabId) !== String(requestedSubTab.id)) {
+      setActiveSubTabId(requestedSubTab.id);
+    }
     navigate(location.pathname, { replace: true, state: null });
-  }, [location.state, tabs, activeTabId, navigate, location.pathname]);
+  }, [location.state, tabs, subTabs, activeTabId, activeSubTabId, navigate, location.pathname]);
 
-  const activeCategories = categories.filter(c => c.tab_id === activeTabId);
+  React.useEffect(() => {
+    if (!activeTabId) {
+      if (activeSubTabId !== null) setActiveSubTabId(null);
+      return;
+    }
+    if (activeSubTabs.length === 0) return;
+    if (activeSubTab && String(activeSubTabId) === String(activeSubTab.id)) return;
+    setActiveSubTabId(activeSubTabs[0].id);
+  }, [activeTabId, activeSubTabs, activeSubTab, activeSubTabId]);
+
+  const activeCategories = categories.filter(
+    (c) => String(c.tab_id) === String(activeTabId) && String(c.sub_tab_id) === String(activeSubTab?.id)
+  );
   const activeCharacters = characters.filter(ch => {
     const cat = categories.find(c => c.id === ch.category_id);
-    return cat?.tab_id === activeTabId;
+    return String(cat?.tab_id) === String(activeTabId) && String(cat?.sub_tab_id) === String(activeSubTab?.id);
   });
   const originalCharacterById = useMemo(
     () => new Map(characters.filter((ch) => !ch.is_proxy).map((ch) => [String(ch.id), ch])),
@@ -506,10 +579,40 @@ export default function Home({ mode = 'home' }) {
     () => new Map(tabs.map((t) => [String(t.id), t])),
     [tabs]
   );
+  const subTabById = useMemo(
+    () => new Map(subTabs.map((subTab) => [String(subTab.id), subTab])),
+    [subTabs]
+  );
   const tagById = useMemo(
     () => new Map(allTags.map((t) => [String(t.id), t])),
     [allTags]
   );
+  const activeTab = useMemo(
+    () => tabs.find((tab) => String(tab.id) === String(activeTabId)) || null,
+    [tabs, activeTabId]
+  );
+  const isActiveTabEmpty = useMemo(() => {
+    if (!activeTabId) return true;
+    const scopedSubTabs = subTabs.filter((subTab) => String(subTab.tab_id) === String(activeTabId));
+    const hasCustomSubTabs =
+      scopedSubTabs.length > 1 ||
+      scopedSubTabs.some(
+        (subTab) => (subTab.name || 'Sub-tab 1') !== 'Sub-tab 1' || Boolean((subTab.description || '').trim())
+      );
+    if (hasCustomSubTabs) return false;
+
+    return !(
+      categories.some((category) => String(category.tab_id) === String(activeTabId)) ||
+      allTags.some((tag) => String(tag.tab_id) === String(activeTabId)) ||
+      characters.some((character) => {
+        const category = categories.find((item) => String(item.id) === String(character.category_id));
+        return category && String(category.tab_id) === String(activeTabId);
+      }) ||
+      diagramCanvases.some((canvas) => String(canvas.tabId) === String(activeTabId)) ||
+      diagramNodes.some((node) => String(node.tabId) === String(activeTabId)) ||
+      diagramEdges.some((edge) => String(edge.tabId) === String(activeTabId))
+    );
+  }, [activeTabId, subTabs, categories, allTags, characters, diagramCanvases, diagramNodes, diagramEdges]);
   const resolvedActiveCharacters = useMemo(
     () =>
       activeCharacters
@@ -735,16 +838,21 @@ export default function Home({ mode = 'home' }) {
     [diagramToolMap, selectedDiagramToolId]
   );
   const visibleDiagramCanvases = useMemo(
-    () => diagramCanvases.filter((canvas) => String(canvas.tabId) === String(activeTabId)),
-    [diagramCanvases, activeTabId]
+    () =>
+      diagramCanvases.filter(
+        (canvas) =>
+          String(canvas.tabId) === String(activeTabId) &&
+          String(canvas.subTabId ?? activeSubTab?.id ?? '') === String(activeSubTab?.id ?? '')
+      ),
+    [diagramCanvases, activeTabId, activeSubTab]
   );
   const activeDiagramCanvasId = useMemo(() => {
-    const selectedCanvasId = activeDiagramCanvasByTab[String(activeTabId)];
+    const selectedCanvasId = activeDiagramCanvasByScope[activeScopeKey];
     if (selectedCanvasId && visibleDiagramCanvases.some((canvas) => canvas.id === selectedCanvasId)) {
       return selectedCanvasId;
     }
     return visibleDiagramCanvases[0]?.id || null;
-  }, [activeDiagramCanvasByTab, activeTabId, visibleDiagramCanvases]);
+  }, [activeDiagramCanvasByScope, activeScopeKey, visibleDiagramCanvases]);
   const currentDiagramCanvas = useMemo(
     () => visibleDiagramCanvases.find((canvas) => canvas.id === activeDiagramCanvasId) || null,
     [visibleDiagramCanvases, activeDiagramCanvasId]
@@ -752,16 +860,22 @@ export default function Home({ mode = 'home' }) {
   const visibleDiagramNodes = useMemo(
     () =>
       diagramNodes.filter(
-        (node) => String(node.tabId) === String(activeTabId) && String(node.canvasId) === String(activeDiagramCanvasId)
+        (node) =>
+          String(node.tabId) === String(activeTabId) &&
+          String(node.subTabId ?? activeSubTab?.id ?? '') === String(activeSubTab?.id ?? '') &&
+          String(node.canvasId) === String(activeDiagramCanvasId)
       ),
-    [diagramNodes, activeTabId, activeDiagramCanvasId]
+    [diagramNodes, activeTabId, activeSubTab, activeDiagramCanvasId]
   );
   const visibleDiagramEdges = useMemo(
     () =>
       diagramEdges.filter(
-        (edge) => String(edge.tabId) === String(activeTabId) && String(edge.canvasId) === String(activeDiagramCanvasId)
+        (edge) =>
+          String(edge.tabId) === String(activeTabId) &&
+          String(edge.subTabId ?? activeSubTab?.id ?? '') === String(activeSubTab?.id ?? '') &&
+          String(edge.canvasId) === String(activeDiagramCanvasId)
       ),
-    [diagramEdges, activeTabId, activeDiagramCanvasId]
+    [diagramEdges, activeTabId, activeSubTab, activeDiagramCanvasId]
   );
   const selectedDiagramEdge = useMemo(
     () => visibleDiagramEdges.find((edge) => edge.id === selectedDiagramEdgeId) || null,
@@ -809,6 +923,7 @@ export default function Home({ mode = 'home' }) {
     [selectedDiagramEdge, diagramToolMap, diagramToolNameMap]
   );
   const activeDiagramTabName = tabById.get(String(activeTabId))?.name || 'Current Tab';
+  const activeDiagramSubTabName = activeSubTab?.name || 'Current Sub-Tab';
 
   const globalResults = useMemo(() => {
     if (!globalTokens.length) return [];
@@ -819,17 +934,22 @@ export default function Home({ mode = 'home' }) {
       .map((ch) => {
         const category = categoryById.get(String(ch.category_id));
         const tab = category ? tabById.get(String(category.tab_id)) : null;
+        const subTab = category ? subTabById.get(String(category.sub_tab_id)) : null;
         return {
           character: ch,
           category,
           tab,
+          subTab,
         };
       });
-  }, [characters, globalTokens, categoryById, tabById, tagById]);
+  }, [characters, globalTokens, categoryById, tabById, subTabById, tagById]);
 
-  const triggerHighlight = (characterId, tabId) => {
+  const triggerHighlight = (characterId, tabId, subTabId = null) => {
     if (tabId && String(tabId) !== String(activeTabId)) {
       setActiveTabId(tabId);
+    }
+    if (subTabId && String(subTabId) !== String(activeSubTabId)) {
+      setActiveSubTabId(subTabId);
     }
     setHighlightedId(characterId);
   };
@@ -935,6 +1055,15 @@ export default function Home({ mode = 'home' }) {
     queryClient.invalidateQueries({ queryKey: ['categories'] });
   };
 
+  const persistSubTabOrder = async (draggedId, targetId) => {
+    const reordered = reorderItems(activeSubTabs, draggedId, targetId);
+    if (!reordered) return;
+    await Promise.all(
+      reordered.map((subTab, index) => dataClient.entities.SubTab.update(subTab.id, { sort_order: index }))
+    );
+    queryClient.invalidateQueries({ queryKey: ['sub-tabs'] });
+  };
+
   const startListDrag = (type, item) => {
     setListDrag({ type, id: String(item.id), overId: String(item.id) });
   };
@@ -962,6 +1091,13 @@ export default function Home({ mode = 'home' }) {
     clearListDrag();
     if (!dragSnapshot || dragSnapshot.type !== 'category') return;
     await persistCategoryOrder(dragSnapshot.id, targetId);
+  };
+
+  const handleSubTabReorder = async (targetId) => {
+    const dragSnapshot = listDrag;
+    clearListDrag();
+    if (!dragSnapshot || dragSnapshot.type !== 'subtab') return;
+    await persistSubTabOrder(dragSnapshot.id, targetId);
   };
 
   React.useEffect(() => {
@@ -1039,26 +1175,63 @@ export default function Home({ mode = 'home' }) {
     setDiagramCanvasDockOpen(false);
     setPendingConnectionNodeId(null);
     setSelectedDiagramEdgeId(null);
-  }, [diagramMode, activeTabId]);
+  }, [diagramMode, activeTabId, activeSubTabId]);
 
   React.useEffect(() => {
-    if (!activeTabId) return;
+    if (subTabs.length === 0) return;
+    const defaultSubTabByTab = new Map(
+      tabs.map((tab) => [String(tab.id), getScopedSubTabs(subTabs, tab.id)[0]?.id || null])
+    );
+    setDiagramCanvases((current) =>
+      current.map((canvas) =>
+        canvas.subTabId
+          ? canvas
+          : {
+              ...canvas,
+              subTabId: defaultSubTabByTab.get(String(canvas.tabId)) || null,
+            }
+      )
+    );
+    setDiagramNodes((current) =>
+      current.map((node) =>
+        node.subTabId
+          ? node
+          : {
+              ...node,
+              subTabId: defaultSubTabByTab.get(String(node.tabId)) || null,
+            }
+      )
+    );
+    setDiagramEdges((current) =>
+      current.map((edge) =>
+        edge.subTabId
+          ? edge
+          : {
+              ...edge,
+              subTabId: defaultSubTabByTab.get(String(edge.tabId)) || null,
+            }
+      )
+    );
+  }, [subTabs, tabs]);
+
+  React.useEffect(() => {
+    if (!activeTabId || !activeSubTab?.id) return;
     if (visibleDiagramCanvases.length > 0) {
-      if (activeDiagramCanvasId && activeDiagramCanvasByTab[String(activeTabId)] === activeDiagramCanvasId) return;
-      setActiveDiagramCanvasByTab((current) => ({
+      if (activeDiagramCanvasId && activeDiagramCanvasByScope[activeScopeKey] === activeDiagramCanvasId) return;
+      setActiveDiagramCanvasByScope((current) => ({
         ...current,
-        [String(activeTabId)]: activeDiagramCanvasId || visibleDiagramCanvases[0]?.id || null,
+        [activeScopeKey]: activeDiagramCanvasId || visibleDiagramCanvases[0]?.id || null,
       }));
       return;
     }
 
-    const nextCanvas = createDiagramCanvas(activeTabId, 'Main Canvas');
+    const nextCanvas = createDiagramCanvas(activeTabId, activeSubTab.id, 'Main Canvas');
     setDiagramCanvases((current) => [...current, nextCanvas]);
-    setActiveDiagramCanvasByTab((current) => ({
+    setActiveDiagramCanvasByScope((current) => ({
       ...current,
-      [String(activeTabId)]: nextCanvas.id,
+      [activeScopeKey]: nextCanvas.id,
     }));
-  }, [activeTabId, activeDiagramCanvasByTab, activeDiagramCanvasId, visibleDiagramCanvases]);
+  }, [activeTabId, activeSubTab, activeDiagramCanvasByScope, activeDiagramCanvasId, activeScopeKey, visibleDiagramCanvases]);
 
   React.useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -1066,12 +1239,12 @@ export default function Home({ mode = 'home' }) {
       DIAGRAM_STORAGE_KEY,
       JSON.stringify({
         canvases: diagramCanvases,
-        activeCanvasByTab: activeDiagramCanvasByTab,
+        activeCanvasByScope: activeDiagramCanvasByScope,
         nodes: diagramNodes,
         edges: diagramEdges,
       })
     );
-  }, [diagramCanvases, activeDiagramCanvasByTab, diagramNodes, diagramEdges]);
+  }, [diagramCanvases, activeDiagramCanvasByScope, diagramNodes, diagramEdges]);
 
   React.useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -1204,6 +1377,7 @@ export default function Home({ mode = 'home' }) {
               {
                 id: `diagram-node-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
                 tabId: activeTabId,
+                subTabId: activeSubTab?.id || null,
                 canvasId: activeDiagramCanvasId,
                 characterId: diagramDrag.character.id,
                 name: diagramDrag.character.name,
@@ -1227,15 +1401,23 @@ export default function Home({ mode = 'home' }) {
       window.removeEventListener('mousemove', handleMouseMove);
       window.removeEventListener('mouseup', handleMouseUp);
     };
-  }, [diagramDrag, diagramMode, categoryById, activeTabId, activeDiagramCanvasId, diagramViewport]);
+  }, [diagramDrag, diagramMode, categoryById, activeTabId, activeSubTab, activeDiagramCanvasId, diagramViewport]);
 
   // Tab mutations
   const createTab = useMutation({
     mutationFn: (data) => dataClient.entities.Tab.create({ ...data, sort_order: tabs.length }),
-    onSuccess: (newTab) => {
+    onSuccess: async (newTab) => {
+      const defaultSubTab = await dataClient.entities.SubTab.create({
+        tab_id: newTab.id,
+        name: 'Sub-tab 1',
+        description: '',
+        sort_order: 0,
+      });
       queryClient.invalidateQueries({ queryKey: ['tabs'] });
+      queryClient.invalidateQueries({ queryKey: ['sub-tabs'] });
       setTabDialog({ open: false, editData: null });
       setActiveTabId(newTab.id);
+      setActiveSubTabId(defaultSubTab.id);
     },
   });
 
@@ -1249,26 +1431,146 @@ export default function Home({ mode = 'home' }) {
 
   const deleteTab = useMutation({
     mutationFn: async (tab) => {
+      const [allConcepts, allEvents, allMetrics, allEventTypes] = await Promise.all([
+        dataClient.entities.Concept.list('sort_order'),
+        dataClient.entities.Event.list('sort_order'),
+        dataClient.entities.Metric.list('sort_order'),
+        dataClient.entities.EventType.list('sort_order'),
+      ]);
+      const subTabsInTab = subTabs.filter((subTab) => String(subTab.tab_id) === String(tab.id));
       const catsInTab = categories.filter(c => c.tab_id === tab.id);
       for (const cat of catsInTab) {
         const charsInCat = characters.filter(ch => ch.category_id === cat.id);
         for (const ch of charsInCat) await deleteCharacterRecord(ch);
         await dataClient.entities.Category.delete(cat.id);
       }
+      await Promise.all([
+        ...allTags.filter((tag) => String(tag.tab_id) === String(tab.id)).map((tag) => dataClient.entities.Tag.delete(tag.id)),
+        ...subTabsInTab.flatMap((subTab) => [
+          ...allConcepts
+            .filter((concept) => String(concept.sub_tab_id) === String(subTab.id))
+            .map((concept) => dataClient.entities.Concept.delete(concept.id)),
+          ...allEvents
+            .filter((event) => String(event.sub_tab_id) === String(subTab.id))
+            .map((event) => dataClient.entities.Event.delete(event.id)),
+          ...allMetrics
+            .filter((metric) => String(metric.sub_tab_id) === String(subTab.id))
+            .map((metric) => dataClient.entities.Metric.delete(metric.id)),
+          ...allEventTypes
+            .filter((eventType) => String(eventType.sub_tab_id) === String(subTab.id))
+            .map((eventType) => dataClient.entities.EventType.delete(eventType.id)),
+        ]),
+        ...subTabsInTab.map((subTab) => dataClient.entities.SubTab.delete(subTab.id)),
+      ]);
       await dataClient.entities.Tab.delete(tab.id);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['tabs'] });
+      queryClient.invalidateQueries({ queryKey: ['sub-tabs'] });
       queryClient.invalidateQueries({ queryKey: ['categories'] });
       queryClient.invalidateQueries({ queryKey: ['characters'] });
+      queryClient.invalidateQueries({ queryKey: ['concepts'] });
+      queryClient.invalidateQueries({ queryKey: ['events'] });
+      queryClient.invalidateQueries({ queryKey: ['metrics'] });
+      queryClient.invalidateQueries({ queryKey: ['event-types'] });
+      queryClient.invalidateQueries({ queryKey: ['tags'] });
       setDeleteConfirm({ open: false, type: null, item: null });
       setActiveTabId(null);
+      setActiveSubTabId(null);
+    },
+  });
+
+  const createSubTab = useMutation({
+    mutationFn: (data) =>
+      dataClient.entities.SubTab.create({
+        ...data,
+        tab_id: activeTabId,
+        sort_order: activeSubTabs.length,
+      }),
+    onSuccess: (newSubTab) => {
+      queryClient.invalidateQueries({ queryKey: ['sub-tabs'] });
+      setSubTabDialog({ open: false, editData: null });
+      setActiveSubTabId(newSubTab.id);
+    },
+  });
+
+  const updateSubTab = useMutation({
+    mutationFn: ({ id, data }) => dataClient.entities.SubTab.update(id, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['sub-tabs'] });
+      setSubTabDialog({ open: false, editData: null });
+    },
+  });
+
+  const deleteSubTab = useMutation({
+    mutationFn: async (subTab) => {
+      const [allConcepts, allEvents, allMetrics, allEventTypes] = await Promise.all([
+        dataClient.entities.Concept.list('sort_order'),
+        dataClient.entities.Event.list('sort_order'),
+        dataClient.entities.Metric.list('sort_order'),
+        dataClient.entities.EventType.list('sort_order'),
+      ]);
+      const scopedCategories = categories.filter((category) => String(category.sub_tab_id) === String(subTab.id));
+      for (const category of scopedCategories) {
+        const charsInCat = characters.filter((character) => String(character.category_id) === String(category.id));
+        for (const character of charsInCat) await deleteCharacterRecord(character);
+        await dataClient.entities.Category.delete(category.id);
+      }
+      await Promise.all([
+        ...subTabs.filter((item) => String(item.tab_id) === String(subTab.tab_id) && String(item.id) !== String(subTab.id)).map(
+          (item, index) => dataClient.entities.SubTab.update(item.id, { sort_order: index })
+        ),
+        ...allConcepts
+          .filter((concept) => String(concept.sub_tab_id) === String(subTab.id))
+          .map((concept) => dataClient.entities.Concept.delete(concept.id)),
+        ...allEvents
+          .filter((event) => String(event.sub_tab_id) === String(subTab.id))
+          .map((event) => dataClient.entities.Event.delete(event.id)),
+        ...allMetrics
+          .filter((metric) => String(metric.sub_tab_id) === String(subTab.id))
+          .map((metric) => dataClient.entities.Metric.delete(metric.id)),
+        ...allEventTypes
+          .filter((eventType) => String(eventType.sub_tab_id) === String(subTab.id))
+          .map((eventType) => dataClient.entities.EventType.delete(eventType.id)),
+      ]);
+      await dataClient.entities.SubTab.delete(subTab.id);
+    },
+    onSuccess: (_, deletedSubTab) => {
+      setDiagramCanvases((current) => current.filter((canvas) => String(canvas.subTabId) !== String(deletedSubTab.id)));
+      setDiagramNodes((current) => current.filter((node) => String(node.subTabId) !== String(deletedSubTab.id)));
+      setDiagramEdges((current) => current.filter((edge) => String(edge.subTabId) !== String(deletedSubTab.id)));
+      setActiveDiagramCanvasByScope((current) =>
+        Object.fromEntries(
+          Object.entries(current).filter(([scopeKey]) => scopeKey !== getSubTabScopeKey(deletedSubTab.tab_id, deletedSubTab.id))
+        )
+      );
+      queryClient.invalidateQueries({ queryKey: ['sub-tabs'] });
+      queryClient.invalidateQueries({ queryKey: ['categories'] });
+      queryClient.invalidateQueries({ queryKey: ['characters'] });
+      queryClient.invalidateQueries({ queryKey: ['concepts'] });
+      queryClient.invalidateQueries({ queryKey: ['events'] });
+      queryClient.invalidateQueries({ queryKey: ['metrics'] });
+      queryClient.invalidateQueries({ queryKey: ['event-types'] });
+      setDeleteConfirm({ open: false, type: null, item: null });
+      if (String(activeSubTabId) === String(deletedSubTab.id)) {
+        const remaining = getScopedSubTabs(
+          subTabs.filter((item) => String(item.id) !== String(deletedSubTab.id)),
+          deletedSubTab.tab_id
+        );
+        setActiveSubTabId(remaining[0]?.id || null);
+      }
     },
   });
 
   // Category mutations
   const createCategory = useMutation({
-    mutationFn: (data) => dataClient.entities.Category.create({ ...data, tab_id: activeTabId, sort_order: activeCategories.length }),
+    mutationFn: (data) =>
+      dataClient.entities.Category.create({
+        ...data,
+        tab_id: activeTabId,
+        sub_tab_id: activeSubTab?.id,
+        sort_order: activeCategories.length,
+      }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['categories'] });
       setCategoryDialog({ open: false, editData: null });
@@ -1473,6 +1775,11 @@ export default function Home({ mode = 'home' }) {
     else createTab.mutate(data);
   };
 
+  const handleSubTabSubmit = (data) => {
+    if (subTabDialog.editData) updateSubTab.mutate({ id: subTabDialog.editData.id, data });
+    else createSubTab.mutate(data);
+  };
+
   const handleCategorySubmit = (data) => {
     if (categoryDialog.editData) updateCategory.mutate({ id: categoryDialog.editData.id, data });
     else createCategory.mutate(data);
@@ -1485,8 +1792,223 @@ export default function Home({ mode = 'home' }) {
 
   const handleDeleteConfirm = () => {
     if (deleteConfirm.type === 'tab') deleteTab.mutate(deleteConfirm.item);
+    else if (deleteConfirm.type === 'subtab') deleteSubTab.mutate(deleteConfirm.item);
     else if (deleteConfirm.type === 'category') deleteCategory.mutate(deleteConfirm.item);
     else deleteCharacter.mutate(deleteConfirm.item);
+  };
+
+  const handleExportCurrentTab = async () => {
+    if (!activeTab) return;
+    setExportingTab(true);
+    try {
+      const [allConcepts, allEvents, allMetrics, allEventTypes] = await Promise.all([
+        dataClient.entities.Concept.list('sort_order'),
+        dataClient.entities.Event.list('sort_order'),
+        dataClient.entities.Metric.list('sort_order'),
+        dataClient.entities.EventType.list('sort_order'),
+      ]);
+
+      const exportedSubTabs = subTabs.filter((subTab) => String(subTab.tab_id) === String(activeTab.id));
+      const exportedSubTabIds = new Set(exportedSubTabs.map((subTab) => String(subTab.id)));
+      const exportedCategories = categories.filter((category) => String(category.tab_id) === String(activeTab.id));
+      const exportedCategoryIds = new Set(exportedCategories.map((category) => String(category.id)));
+      const exportedCharacters = characters.filter((character) => exportedCategoryIds.has(String(character.category_id)));
+      const exportedTags = allTags.filter((tag) => String(tag.tab_id) === String(activeTab.id));
+      const exportedConcepts = allConcepts.filter((concept) => String(concept.tab_id) === String(activeTab.id));
+      const exportedEvents = allEvents.filter((event) => String(event.tab_id) === String(activeTab.id));
+      const exportedMetrics = allMetrics.filter((metric) => String(metric.tab_id) === String(activeTab.id));
+      const exportedEventTypes = allEventTypes.filter((eventType) => String(eventType.tab_id) === String(activeTab.id));
+      const exportedCanvases = diagramCanvases.filter((canvas) => String(canvas.tabId) === String(activeTab.id));
+      const exportedCanvasIds = new Set(exportedCanvases.map((canvas) => String(canvas.id)));
+      const exportedNodes = diagramNodes.filter(
+        (node) => String(node.tabId) === String(activeTab.id) && exportedCanvasIds.has(String(node.canvasId))
+      );
+      const exportedEdges = diagramEdges.filter(
+        (edge) => String(edge.tabId) === String(activeTab.id) && exportedCanvasIds.has(String(edge.canvasId))
+      );
+      const exportedActiveCanvasByScope = Object.fromEntries(
+        Object.entries(activeDiagramCanvasByScope).filter(([scopeKey]) => {
+          const [, subTabId] = scopeKey.split(':');
+          return exportedSubTabIds.has(String(subTabId));
+        })
+      );
+
+      const payload = {
+        fileType: EXPORT_FILE_TYPE,
+        version: EXPORT_FILE_VERSION,
+        exportedAt: new Date().toISOString(),
+        tab: activeTab,
+        data: {
+          subTabs: exportedSubTabs,
+          categories: exportedCategories,
+          characters: exportedCharacters,
+          tags: exportedTags,
+          concepts: exportedConcepts,
+          events: exportedEvents,
+          metrics: exportedMetrics,
+          eventTypes: exportedEventTypes,
+          diagrams: {
+            canvases: exportedCanvases,
+            nodes: exportedNodes,
+            edges: exportedEdges,
+            activeCanvasByScope: exportedActiveCanvasByScope,
+          },
+        },
+      };
+
+      const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `${sanitizeExportFileName(activeTab.name)}.fgr`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+
+      toast({
+        title: 'Story exported',
+        description: `${activeTab.name} was downloaded as a .fgr file.`,
+      });
+    } catch (error) {
+      toast({
+        title: 'Export failed',
+        description: error?.message || 'Something went wrong while exporting this tab.',
+        variant: 'destructive',
+      });
+    } finally {
+      setExportingTab(false);
+    }
+  };
+
+  const handleImportFileChange = async (event) => {
+    const input = event.target;
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    if (!activeTab) {
+      input.value = '';
+      toast({
+        title: 'Import unavailable',
+        description: 'Choose or create a tab before importing a story file.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    if (!isActiveTabEmpty) {
+      setPendingStoryImportFile(file);
+      setStoryImportConfirmOpen(true);
+      return;
+    }
+
+    await importStoryIntoActiveTab(file);
+    input.value = '';
+  };
+
+  const importStoryIntoActiveTab = async (file) => {
+    if (!file || !activeTab) return;
+
+    setImportingTab(true);
+    try {
+      const payload = await parseImportFile(file);
+      const currentStore = dataClient.storage.read();
+      const currentTabSortOrder = activeTab.sort_order ?? 0;
+      const filteredStore = {
+        ...currentStore,
+        Tab: (currentStore.Tab || []).filter((tab) => String(tab.id) !== String(activeTab.id)),
+        SubTab: (currentStore.SubTab || []).filter((subTab) => String(subTab.tab_id) !== String(activeTab.id)),
+        Category: (currentStore.Category || []).filter((category) => String(category.tab_id) !== String(activeTab.id)),
+        Character: (currentStore.Character || []).filter((character) => {
+          const category = categories.find((item) => String(item.id) === String(character.category_id));
+          return !category || String(category.tab_id) !== String(activeTab.id);
+        }),
+        Tag: (currentStore.Tag || []).filter((tag) => String(tag.tab_id) !== String(activeTab.id)),
+        Concept: (currentStore.Concept || []).filter((concept) => String(concept.tab_id) !== String(activeTab.id)),
+        Event: (currentStore.Event || []).filter((event) => String(event.tab_id) !== String(activeTab.id)),
+        Metric: (currentStore.Metric || []).filter((metric) => String(metric.tab_id) !== String(activeTab.id)),
+        EventType: (currentStore.EventType || []).filter((eventType) => String(eventType.tab_id) !== String(activeTab.id)),
+      };
+      const filteredDiagramState = {
+        canvases: diagramCanvases.filter((canvas) => String(canvas.tabId) !== String(activeTab.id)),
+        nodes: diagramNodes.filter((node) => String(node.tabId) !== String(activeTab.id)),
+        edges: diagramEdges.filter((edge) => String(edge.tabId) !== String(activeTab.id)),
+        activeCanvasByScope: Object.fromEntries(
+          Object.entries(activeDiagramCanvasByScope).filter(([scopeKey]) => {
+            const [tabId] = scopeKey.split(':');
+            return String(tabId) !== String(activeTab.id);
+          })
+        ),
+      };
+      const merged = mergeImportedStory({
+        payload,
+        store: filteredStore,
+        diagramState: filteredDiagramState,
+      });
+      const nextTabs = [...merged.store.Tab]
+        .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0))
+        .map((tab) =>
+          String(tab.id) === String(merged.importedTabId)
+            ? { ...tab, sort_order: currentTabSortOrder }
+            : tab
+        )
+        .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0))
+        .map((tab, index) => ({ ...tab, sort_order: index }));
+
+      const nextStore = {
+        ...merged.store,
+        Tab: nextTabs,
+      };
+
+      dataClient.storage.write(nextStore);
+      setDiagramCanvases(merged.diagramState.canvases);
+      setDiagramNodes(merged.diagramState.nodes);
+      setDiagramEdges(merged.diagramState.edges);
+      setActiveDiagramCanvasByScope(merged.diagramState.activeCanvasByScope);
+      setSelectedDiagramToolId(null);
+      setPendingConnectionNodeId(null);
+      setSelectedDiagramEdgeId(null);
+      setDiagramDrag(null);
+      setProxyDrag(null);
+      setListDrag(null);
+      setActiveTabId(merged.importedTabId);
+      setActiveSubTabId(merged.importedSubTabId);
+      setTransferDialogOpen(false);
+
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['tabs'] }),
+        queryClient.invalidateQueries({ queryKey: ['sub-tabs'] }),
+        queryClient.invalidateQueries({ queryKey: ['categories'] }),
+        queryClient.invalidateQueries({ queryKey: ['characters'] }),
+        queryClient.invalidateQueries({ queryKey: ['tags'] }),
+        queryClient.invalidateQueries({ queryKey: ['concepts'] }),
+        queryClient.invalidateQueries({ queryKey: ['events'] }),
+        queryClient.invalidateQueries({ queryKey: ['metrics'] }),
+        queryClient.invalidateQueries({ queryKey: ['event-types'] }),
+      ]);
+
+      toast({
+        title: 'Story imported',
+        description: `${merged.importedTabName} replaced ${activeTab.name}.`,
+      });
+    } catch (error) {
+      toast({
+        title: 'Import failed',
+        description: error?.message || 'Something went wrong while importing this .fgr file.',
+        variant: 'destructive',
+      });
+    } finally {
+      if (importFileInputRef.current) importFileInputRef.current.value = '';
+      setPendingStoryImportFile(null);
+      setStoryImportConfirmOpen(false);
+      setImportingTab(false);
+    }
+  };
+
+  const cancelStoryImportReplacement = () => {
+    if (importFileInputRef.current) importFileInputRef.current.value = '';
+    setPendingStoryImportFile(null);
+    setStoryImportConfirmOpen(false);
   };
   const handleProxyDragStart = (character, event) => {
     if (!character || character.is_proxy || event.button !== 2) return;
@@ -1504,7 +2026,7 @@ export default function Home({ mode = 'home' }) {
     const original = originalCharacterById.get(String(character.original_character_id));
     if (!original) return;
     const category = categoryById.get(String(original.category_id));
-    triggerHighlight(original.id, category?.tab_id);
+    triggerHighlight(original.id, category?.tab_id, category?.sub_tab_id);
   };
   const handleDiagramCharacterDragStart = (character, event) => {
     if (!diagramMode || !character) return;
@@ -1780,23 +2302,27 @@ export default function Home({ mode = 'home' }) {
     });
   };
   const handleDiagramCanvasSelect = (canvasId) => {
-    if (!activeTabId) return;
-    setActiveDiagramCanvasByTab((current) => ({
+    if (!activeTabId || !activeSubTab?.id) return;
+    setActiveDiagramCanvasByScope((current) => ({
       ...current,
-      [String(activeTabId)]: canvasId,
+      [activeScopeKey]: canvasId,
     }));
     setPendingConnectionNodeId(null);
     setSelectedDiagramEdgeId(null);
     setSelectedDiagramToolId(null);
   };
   const handleDiagramCanvasAdd = () => {
-    if (!activeTabId) return;
+    if (!activeTabId || !activeSubTab?.id) return;
     const nextIndex = visibleDiagramCanvases.length + 1;
-    const nextCanvas = createDiagramCanvas(activeTabId, nextIndex === 1 ? 'Main Canvas' : `Canvas ${nextIndex}`);
+    const nextCanvas = createDiagramCanvas(
+      activeTabId,
+      activeSubTab.id,
+      nextIndex === 1 ? 'Main Canvas' : `Canvas ${nextIndex}`
+    );
     setDiagramCanvases((current) => [...current, nextCanvas]);
-    setActiveDiagramCanvasByTab((current) => ({
+    setActiveDiagramCanvasByScope((current) => ({
       ...current,
-      [String(activeTabId)]: nextCanvas.id,
+      [activeScopeKey]: nextCanvas.id,
     }));
     setPendingConnectionNodeId(null);
     setSelectedDiagramEdgeId(null);
@@ -1816,9 +2342,9 @@ export default function Home({ mode = 'home' }) {
     setDiagramCanvases((current) => current.filter((canvas) => canvas.id !== currentDiagramCanvas.id));
     setDiagramNodes((current) => current.filter((node) => node.canvasId !== currentDiagramCanvas.id));
     setDiagramEdges((current) => current.filter((edge) => edge.canvasId !== currentDiagramCanvas.id));
-    setActiveDiagramCanvasByTab((current) => ({
+    setActiveDiagramCanvasByScope((current) => ({
       ...current,
-      [String(activeTabId)]: nextCanvasId,
+      [activeScopeKey]: nextCanvasId,
     }));
     setPendingConnectionNodeId(null);
     setSelectedDiagramEdgeId(null);
@@ -1858,6 +2384,7 @@ export default function Home({ mode = 'home' }) {
         {
           id: newEdgeId,
           tabId: activeTabId,
+          subTabId: activeSubTab?.id || null,
           canvasId: activeDiagramCanvasId,
           fromNodeId,
           toNodeId,
@@ -1951,7 +2478,7 @@ export default function Home({ mode = 'home' }) {
     }));
   };
 
-  if (loadingTabs || loadingCats || loadingChars || loadingTags) {
+  if (loadingTabs || loadingSubTabs || loadingCats || loadingChars || loadingTags) {
     return (
       <div className="fixed inset-0 flex items-center justify-center">
         <div className="w-8 h-8 border-4 border-primary/20 border-t-primary rounded-full animate-spin" />
@@ -2086,7 +2613,7 @@ export default function Home({ mode = 'home' }) {
                       key={result.character.id}
                       type="button"
                       onClick={() => {
-                        triggerHighlight(result.character.id, result.tab?.id);
+                        triggerHighlight(result.character.id, result.tab?.id, result.subTab?.id);
                         setGlobalQuery('');
                         setLocalQuery('');
                       }}
@@ -2094,7 +2621,7 @@ export default function Home({ mode = 'home' }) {
                     >
                       <div className="text-sm font-medium truncate">{result.character.name}</div>
                       <div className="text-[11px] text-muted-foreground truncate">
-                        {result.tab?.name || 'Unknown Tab'} • {result.category?.name || 'Unknown Category'}
+                        {result.tab?.name || 'Unknown Tab'} • {result.subTab?.name || 'Unknown Sub-Tab'} • {result.category?.name || 'Unknown Category'}
                       </div>
                     </button>
                   ))
@@ -2104,9 +2631,19 @@ export default function Home({ mode = 'home' }) {
           </div>
 
           {/* Action buttons */}
-          {activeTabId && (
+          {activeTabId && activeSubTab && (
             <div className="flex gap-2 flex-shrink-0">
-              {activeCategories.length > 0 && (
+              {activeSubTabs.length <= 1 ? (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setSubTabDialog({ open: true, editData: null })}
+                  className="gap-1.5"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span className="hidden sm:inline">Sub-Tab</span>
+                </Button>
+              ) : activeCategories.length > 0 ? (
                 <Button
                   variant="outline"
                   size="sm"
@@ -2116,7 +2653,7 @@ export default function Home({ mode = 'home' }) {
                   <Plus className="w-3.5 h-3.5" />
                   <span className="hidden sm:inline">Character</span>
                 </Button>
-              )}
+              ) : null}
               <Button
                 size="sm"
                 onClick={() => setCategoryDialog({ open: true, editData: null })}
@@ -2128,6 +2665,91 @@ export default function Home({ mode = 'home' }) {
             </div>
           )}
         </div>
+        {activeTabId && activeSubTabs.length > 1 && (
+          <div className="max-w-[1600px] mx-auto px-4 sm:px-6 pb-3 flex items-center gap-3">
+            <div className="flex items-center gap-3 flex-shrink-0">
+              <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground whitespace-nowrap">
+                Sub-Tabs
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setSubTabDialog({ open: true, editData: null })}
+                className="flex-shrink-0 gap-1 h-8"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                New Sub-Tab
+              </Button>
+            </div>
+            <div className="flex items-center gap-2 overflow-x-auto min-w-0 flex-1 scrollbar-hide">
+              {activeSubTabs.map((subTab) => (
+                <div
+                  key={subTab.id}
+                  draggable
+                  onDragStart={(event) => {
+                    event.dataTransfer.effectAllowed = 'move';
+                    event.dataTransfer.setData('text/plain', String(subTab.id));
+                    startListDrag('subtab', subTab);
+                  }}
+                  onDragOver={(event) => {
+                    if (listDrag?.type !== 'subtab') return;
+                    event.preventDefault();
+                    event.dataTransfer.dropEffect = 'move';
+                    updateListDragTarget('subtab', subTab.id);
+                  }}
+                  onDrop={(event) => {
+                    if (listDrag?.type !== 'subtab') return;
+                    event.preventDefault();
+                    handleSubTabReorder(subTab.id);
+                  }}
+                  className={`relative group flex-shrink-0 transition-transform ${
+                    listDrag?.type === 'subtab' && String(listDrag.id) === String(subTab.id) ? 'opacity-60' : ''
+                  } ${
+                    listDrag?.type === 'subtab' && String(listDrag.overId) === String(subTab.id) ? 'scale-[1.03]' : ''
+                  }`}
+                >
+                  <button
+                    type="button"
+                    draggable={false}
+                    onDragStart={(event) => event.stopPropagation()}
+                    onClick={() => setActiveSubTabId(subTab.id)}
+                    className={`rounded-full px-3 py-1.5 text-sm transition-colors ${
+                      String(activeSubTab?.id) === String(subTab.id)
+                        ? 'bg-primary text-primary-foreground shadow-sm'
+                        : 'bg-muted/60 text-muted-foreground hover:bg-muted hover:text-foreground'
+                    }`}
+                  >
+                    {subTab.name}
+                  </button>
+                  {String(activeSubTab?.id) === String(subTab.id) && (
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <button
+                          type="button"
+                          className="absolute -right-1 -top-1 w-4 h-4 rounded-full bg-primary/80 hover:bg-primary flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                        >
+                          <ChevronDown className="w-2.5 h-2.5 text-primary-foreground" />
+                        </button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="start">
+                        <DropdownMenuItem onClick={() => setSubTabDialog({ open: true, editData: subTab })}>
+                          <Pencil className="w-3.5 h-3.5 mr-2" /> Rename
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
+                          onClick={() => setDeleteConfirm({ open: true, type: 'subtab', item: subTab })}
+                          disabled={activeSubTabs.length <= 1}
+                          className="text-destructive focus:text-destructive"
+                        >
+                          <Trash2 className="w-3.5 h-3.5 mr-2" /> Delete
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </header>
       )}
 
@@ -2136,7 +2758,7 @@ export default function Home({ mode = 'home' }) {
         {diagramMode ? (
           tabs.length === 0 ? (
             <EmptyState type="no-tabs" onAction={() => setTabDialog({ open: true, editData: null })} />
-          ) : !activeTabId ? null : (
+          ) : !activeTabId || !activeSubTab ? null : (
             <div className="absolute inset-0 overflow-hidden bg-[#0a0f1a] text-slate-100">
               <section
                 ref={diagramBoardRef}
@@ -2297,22 +2919,59 @@ export default function Home({ mode = 'home' }) {
                   <div>
                     <h2 className="text-lg font-semibold text-slate-100">Diagram Mode</h2>
                     <p className="text-sm text-slate-400">
+                      <span className="font-medium text-slate-200">{activeDiagramTabName}</span>
+                      {' / '}
+                      <span className="font-medium text-slate-200">{activeDiagramSubTabName}</span>
+                    </p>
+                    <p className="text-sm text-slate-400">
                       {selectedDiagramTool
                         ? `Connecting with ${selectedDiagramTool.name}. Pick two nodes.`
                         : 'Build your board from the sidebar.'}
                     </p>
                   </div>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => navigate('/', { state: { activeTabId } })}
-                    className="gap-2 text-slate-300 hover:bg-slate-800 hover:text-slate-100"
-                  >
-                    <ArrowLeft className="w-4 h-4" />
-                    Back
-                  </Button>
+                  <div className="flex items-center gap-2">
+                    {visibleDiagramCanvases.length <= 1 && (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={handleDiagramCanvasAdd}
+                        className="gap-2 border-slate-700 bg-slate-900/70 text-slate-200 hover:bg-slate-800"
+                      >
+                        <Plus className="w-4 h-4" />
+                        Canvas
+                      </Button>
+                    )}
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => navigate('/', { state: buildReturnState(activeTabId, activeSubTabId) })}
+                      className="gap-2 text-slate-300 hover:bg-slate-800 hover:text-slate-100"
+                    >
+                      <ArrowLeft className="w-4 h-4" />
+                      Back
+                    </Button>
+                  </div>
                 </div>
+                {activeSubTabs.length > 1 && (
+                  <div className="mb-4 flex flex-wrap gap-2">
+                    {activeSubTabs.map((subTab) => (
+                      <button
+                        key={subTab.id}
+                        type="button"
+                        onClick={() => setActiveSubTabId(subTab.id)}
+                        className={`rounded-full px-3 py-1.5 text-xs font-medium transition-colors ${
+                          String(activeSubTab?.id) === String(subTab.id)
+                            ? 'bg-sky-500 text-white'
+                            : 'bg-slate-900/70 text-slate-300 hover:bg-slate-800'
+                        }`}
+                      >
+                        {subTab.name}
+                      </button>
+                    ))}
+                  </div>
+                )}
                 <div className="mb-5 grid grid-cols-3 gap-2 rounded-xl bg-slate-900/70 p-1">
                   <button
                     type="button"
@@ -2794,21 +3453,22 @@ export default function Home({ mode = 'home' }) {
                 )}
                 </div>
               </aside>
-              <aside
-                className={`absolute right-4 top-4 bottom-4 z-30 flex flex-col rounded-2xl border border-slate-800 bg-[#0f1726]/94 shadow-[0_20px_50px_rgba(0,0,0,0.35)] backdrop-blur-md transition-[width] duration-200 ${
-                  diagramCanvasDockOpen ? 'w-[280px] px-4 py-5' : 'w-[80px] h-[65px] px-2 py-3'
-                }`}
-              >
-                <button
-                  type="button"
-                  onClick={() => setDiagramCanvasDockOpen((current) => !current)}
-                  className="rounded-xl border border-slate-700 bg-slate-900/70 px-3 py-2 text-sm font-medium text-slate-200 hover:border-slate-500"
+              {visibleDiagramCanvases.length > 1 && (
+                <aside
+                  className={`absolute right-4 top-4 bottom-4 z-30 flex flex-col rounded-2xl border border-slate-800 bg-[#0f1726]/94 shadow-[0_20px_50px_rgba(0,0,0,0.35)] backdrop-blur-md transition-[width] duration-200 ${
+                    diagramCanvasDockOpen ? 'w-[280px] px-4 py-5' : 'w-[80px] h-[65px] px-2 py-3'
+                  }`}
                 >
-                  {diagramCanvasDockOpen ? 'Hide' : 'Deck'}
-                </button>
+                  <button
+                    type="button"
+                    onClick={() => setDiagramCanvasDockOpen((current) => !current)}
+                    className="rounded-xl border border-slate-700 bg-slate-900/70 px-3 py-2 text-sm font-medium text-slate-200 hover:border-slate-500"
+                  >
+                    {diagramCanvasDockOpen ? 'Hide' : 'Deck'}
+                  </button>
 
-                {diagramCanvasDockOpen && (
-                  <div className="mt-4 flex min-h-0 flex-1 flex-col">
+                  {diagramCanvasDockOpen && (
+                    <div className="mt-4 flex min-h-0 flex-1 flex-col">
                     <div className="rounded-2xl border border-slate-800 bg-slate-900/70 p-4">
                       <div className="text-xs uppercase tracking-[0.18em] text-slate-500">Current Tab</div>
                       <div className="mt-2 text-sm font-semibold text-slate-100">{activeDiagramTabName}</div>
@@ -2872,14 +3532,15 @@ export default function Home({ mode = 'home' }) {
                         })}
                       </div>
                     </div>
-                  </div>
-                )}
-              </aside>
+                    </div>
+                  )}
+                </aside>
+              )}
             </div>
           )
         ) : tabs.length === 0 ? (
           <EmptyState type="no-tabs" onAction={() => setTabDialog({ open: true, editData: null })} />
-        ) : !activeTabId ? null : activeCategories.length === 0 ? (
+        ) : !activeTabId || !activeSubTab ? null : activeCategories.length === 0 ? (
           <EmptyState type="no-categories" onAction={() => setCategoryDialog({ open: true, editData: null })} />
         ) : localQuery.trim().length > 0 && visibleCategories.length === 0 ? (
           <div className="text-center py-16 text-muted-foreground">
@@ -2971,7 +3632,7 @@ export default function Home({ mode = 'home' }) {
       )}
 
       <Sheet open={homeSidebarOpen} onOpenChange={setHomeSidebarOpen}>
-        <SheetContent side="left" className="w-[320px] sm:max-w-[320px] p-0">
+        <SheetContent side="left" className="w-[280px] sm:max-w-[280px] p-0">
           <div className="flex h-full flex-col">
             <SheetHeader className="border-b border-border/50 px-6 py-5 text-left">
               <SheetTitle className="font-heading text-xl">Workspace</SheetTitle>
@@ -3005,9 +3666,9 @@ export default function Home({ mode = 'home' }) {
                   )}
                 </div>
                 <p className="text-xs text-muted-foreground">
-                  {activeTabId
-                    ? `${filteredCharacterCount} / ${activeCharacterCount} shown in this tab`
-                    : 'Pick a tab to search within it.'}
+                  {activeTabId && activeSubTab
+                    ? `${filteredCharacterCount} / ${activeCharacterCount} shown in this sub-tab`
+                    : 'Pick a tab and sub-tab to search within it.'}
                 </p>
               </div>
               <Button
@@ -3016,9 +3677,9 @@ export default function Home({ mode = 'home' }) {
                 className="justify-start gap-3 h-11"
                 onClick={() => {
                   setHomeSidebarOpen(false);
-                  if (activeTabId) navigate('/diagram', { state: { activeTabId } });
+                  if (activeTabId && activeSubTabId) navigate('/diagram', { state: buildReturnState(activeTabId, activeSubTabId) });
                 }}
-                disabled={!activeTabId}
+                disabled={!activeTabId || !activeSubTabId}
               >
                 <PanelTopOpen className="w-4 h-4" />
                 Diagram Mode
@@ -3030,9 +3691,9 @@ export default function Home({ mode = 'home' }) {
                 className="justify-start gap-3 h-11"
                 onClick={() => {
                   setHomeSidebarOpen(false);
-                  if (activeTabId) navigate('/concepts', { state: { activeTabId } });
+                  if (activeTabId && activeSubTabId) navigate('/concepts', { state: buildReturnState(activeTabId, activeSubTabId) });
                 }}
-                disabled={!activeTabId}
+                disabled={!activeTabId || !activeSubTabId}
               >
                 <Lightbulb className="w-4 h-4" />
                 Concepts
@@ -3044,9 +3705,9 @@ export default function Home({ mode = 'home' }) {
                 className="justify-start gap-3 h-11"
                 onClick={() => {
                   setHomeSidebarOpen(false);
-                  if (activeTabId) navigate(`/timeline/${activeTabId}`);
+                  if (activeTabId && activeSubTabId) navigate(`/timeline/${activeTabId}`, { state: buildReturnState(activeTabId, activeSubTabId) });
                 }}
-                disabled={!activeTabId}
+                disabled={!activeTabId || !activeSubTabId}
               >
                 <Clock3 className="w-4 h-4" />
                 Timeline
@@ -3065,10 +3726,121 @@ export default function Home({ mode = 'home' }) {
                 <TagsIcon className="w-4 h-4" />
                 Tags
               </Button>
+
+              <div className="mt-auto space-y-2 pt-4">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  className="w-full justify-start gap-3 h-11"
+                  onClick={() => {
+                    setHomeSidebarOpen(false);
+                    setTransferDialogOpen(true);
+                  }}
+                  disabled={!activeTabId}
+                >
+                  <FolderOutput className="w-4 h-4" />
+                  Export / Import
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  className="w-full justify-start gap-3 h-11"
+                  onClick={() => {
+                    setHomeSidebarOpen(false);
+                    navigate('/settings');
+                  }}
+                >
+                  <SettingsIcon className="w-4 h-4" />
+                  Settings
+                </Button>
+                <div>
+                  <p className="text-xs text-muted-foreground">© 2026 Capy Co. Studio.</p>
+                </div>
+              </div>
             </div>
           </div>
         </SheetContent>
       </Sheet>
+
+      <Dialog open={transferDialogOpen} onOpenChange={setTransferDialogOpen}>
+        <DialogContent className="sm:max-w-2xl">
+          <DialogHeader>
+            <DialogTitle className="font-heading text-2xl">Export / Import</DialogTitle>
+            <DialogDescription>
+              Move story data in and out of Forger. Export bundles your active tab and all its data into a single file. Import will restore data from an exported file back into Forger.
+            </DialogDescription>
+          </DialogHeader>
+
+          <Tabs defaultValue="export" className="mt-2">
+            <TabsList className="grid w-full grid-cols-2">
+              <TabsTrigger value="export" className="gap-2">
+                <Download className="h-4 w-4" />
+                Export
+              </TabsTrigger>
+              <TabsTrigger value="import" className="gap-2">
+                <Upload className="h-4 w-4" />
+                Import
+              </TabsTrigger>
+            </TabsList>
+
+            <TabsContent value="export" className="mt-4">
+              <div className="rounded-[28px] border border-border/60 bg-card/70 p-5">
+                <div className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">Current Tab Export</div>
+                <h3 className="mt-2 text-xl font-semibold">{activeTab?.name || 'No active tab selected'}</h3>
+                <p className="mt-3 text-sm leading-6 text-muted-foreground">
+                  Export bundles the active tab into a single <code className="rounded bg-muted px-1.5 py-0.5 text-xs">.fgr</code> file.
+                  The file contains JSON for the tab record, its sub-tabs, characters, tags, concepts, timelines, and diagram canvases.
+                </p>
+                <div className="mt-5 rounded-2xl border border-border/60 bg-background/80 p-4 text-sm text-muted-foreground">
+                  Filename preview: <span className="font-medium text-foreground">{activeTab ? `${sanitizeExportFileName(activeTab.name)}.fgr` : 'story.fgr'}</span>
+                </div>
+                <div className="mt-5 flex justify-end">
+                  <Button
+                    type="button"
+                    onClick={handleExportCurrentTab}
+                    disabled={!activeTab || exportingTab}
+                    className="gap-2"
+                  >
+                    <Download className="h-4 w-4" />
+                    {exportingTab ? 'Exporting...' : 'Export'}
+                  </Button>
+                </div>
+              </div>
+            </TabsContent>
+
+            <TabsContent value="import" className="mt-4">
+              <div className="rounded-[28px] border border-dashed border-border/60 bg-card/50 p-5">
+                <div className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">Import Story</div>
+                <h3 className="mt-2 text-xl font-semibold">Restore a `.fgr` file</h3>
+                <p className="mt-3 text-sm leading-6 text-muted-foreground">
+                  Import will replace the current tab and remaps every linked record so categories, characters, tags, concepts, timelines, canvases, nodes, and wires land exactly where they belong.
+                </p>
+                <div className="mt-5 rounded-2xl border border-border/60 bg-background/80 p-4 text-sm text-muted-foreground">
+                  Supported file: <span className="font-medium text-foreground">Forger export `.fgr`</span>
+                </div>
+                <input
+                  ref={importFileInputRef}
+                  type="file"
+                  accept=".fgr,application/json"
+                  className="hidden"
+                  onChange={handleImportFileChange}
+                />
+                <div className="mt-5 flex justify-end">
+                  <Button
+                    type="button"
+                    onClick={() => importFileInputRef.current?.click()}
+                    disabled={importingTab}
+                    className="gap-2"
+                  >
+                    <Upload className="h-4 w-4" />
+                    {importingTab ? 'Importing...' : 'Choose File'}
+                  </Button>
+                </div>
+              </div>
+            </TabsContent>
+          </Tabs>
+        </DialogContent>
+      </Dialog>
 
       {/* Dialogs */}
       <CreateTabDialog
@@ -3076,6 +3848,12 @@ export default function Home({ mode = 'home' }) {
         onClose={() => setTabDialog({ open: false, editData: null })}
         onSubmit={handleTabSubmit}
         editData={tabDialog.editData}
+      />
+      <CreateSubTabDialog
+        open={subTabDialog.open}
+        onClose={() => setSubTabDialog({ open: false, editData: null })}
+        onSubmit={handleSubTabSubmit}
+        editData={subTabDialog.editData}
       />
       <CreateCategoryDialog
         open={categoryDialog.open}
@@ -3106,11 +3884,13 @@ export default function Home({ mode = 'home' }) {
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>
-              Delete {deleteConfirm.type === 'tab' ? 'Tab' : deleteConfirm.type === 'category' ? 'Category' : deleteConfirm.item?.is_proxy ? 'Proxy' : 'Character'}?
+              Delete {deleteConfirm.type === 'tab' ? 'Tab' : deleteConfirm.type === 'subtab' ? 'Sub-Tab' : deleteConfirm.type === 'category' ? 'Category' : deleteConfirm.item?.is_proxy ? 'Proxy' : 'Character'}?
             </AlertDialogTitle>
             <AlertDialogDescription>
               {deleteConfirm.type === 'tab'
-                ? 'This will permanently delete this tab, all its categories, and all characters inside them.'
+                ? 'This will permanently delete this tab, every sub-tab inside it, and all related records.'
+                : deleteConfirm.type === 'subtab'
+                ? 'This will permanently delete this sub-tab, its categories, concepts, timelines, and diagram canvases.'
                 : deleteConfirm.type === 'category'
                 ? 'This will permanently delete this category and all characters inside it.'
                 : deleteConfirm.item?.is_proxy
@@ -3122,6 +3902,26 @@ export default function Home({ mode = 'home' }) {
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction onClick={handleDeleteConfirm} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">
               Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={storyImportConfirmOpen} onOpenChange={(open) => !open && cancelStoryImportReplacement()}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Replace Current Tab?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Importing this <code className="rounded bg-muted px-1.5 py-0.5 text-xs">.fgr</code> file will permanently replace everything inside <span className="font-medium text-foreground">{activeTab?.name || 'the current tab'}</span>, including sub-tabs, characters, tags, concepts, timelines, and diagram data.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => pendingStoryImportFile && importStoryIntoActiveTab(pendingStoryImportFile)}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              Replace Tab
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

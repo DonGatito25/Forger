@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowLeft, CalendarDays, Clock3, Pencil, Plus, Trash2 } from 'lucide-react';
 
@@ -10,6 +10,7 @@ import CreateEventTypeDialog from '@/components/timeline/CreateEventTypeDialog';
 import StarRating from '@/components/timeline/StarRating';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { buildReturnState, getScopedSubTabs } from '@/lib/subtabs';
 
 const DEFAULT_METRIC_NAME = 'Importance';
 
@@ -28,10 +29,12 @@ const withAlpha = (hex, alpha) => {
 };
 
 export default function Timeline() {
+  const location = useLocation();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { tabId } = useParams();
 
+  const [activeSubTabId, setActiveSubTabId] = useState(null);
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
   const [editDialogOpen, setEditDialogOpen] = useState(false);
   const [metricDialogOpen, setMetricDialogOpen] = useState(false);
@@ -46,6 +49,10 @@ export default function Timeline() {
   const { data: tabs = [], isLoading: loadingTabs } = useQuery({
     queryKey: ['tabs'],
     queryFn: () => dataClient.entities.Tab.list('sort_order'),
+  });
+  const { data: subTabs = [], isLoading: loadingSubTabs } = useQuery({
+    queryKey: ['sub-tabs'],
+    queryFn: () => dataClient.entities.SubTab.list('sort_order'),
   });
 
   const { data: events = [], isLoading: loadingEvents } = useQuery({
@@ -77,15 +84,38 @@ export default function Timeline() {
     () => tabs.find((tab) => String(tab.id) === String(tabId)) || null,
     [tabs, tabId]
   );
+  const activeSubTabs = useMemo(() => getScopedSubTabs(subTabs, tabId), [subTabs, tabId]);
+  const activeSubTab = useMemo(
+    () => activeSubTabs.find((subTab) => String(subTab.id) === String(activeSubTabId)) || activeSubTabs[0] || null,
+    [activeSubTabs, activeSubTabId]
+  );
+
+  useEffect(() => {
+    const requestedSubTabId = location.state?.activeSubTabId;
+    if (requestedSubTabId && activeSubTabs.some((subTab) => String(subTab.id) === String(requestedSubTabId))) {
+      setActiveSubTabId(requestedSubTabId);
+      navigate(location.pathname, { replace: true, state: null });
+      return;
+    }
+    if (activeSubTabs.length > 0 && (!activeSubTabId || !activeSubTabs.some((subTab) => String(subTab.id) === String(activeSubTabId)))) {
+      setActiveSubTabId(activeSubTabs[0].id);
+    }
+  }, [location.state, activeSubTabs, activeSubTabId, navigate, location.pathname]);
 
   const tabEvents = useMemo(
-    () => events.filter((event) => String(event.tab_id) === String(tabId)),
-    [events, tabId]
+    () =>
+      events.filter(
+        (event) => String(event.tab_id) === String(tabId) && String(event.sub_tab_id) === String(activeSubTab?.id)
+      ),
+    [events, tabId, activeSubTab]
   );
 
   const activeCategories = useMemo(
-    () => categories.filter((category) => String(category.tab_id) === String(tabId)),
-    [categories, tabId]
+    () =>
+      categories.filter(
+        (category) => String(category.tab_id) === String(tabId) && String(category.sub_tab_id) === String(activeSubTab?.id)
+      ),
+    [categories, tabId, activeSubTab]
   );
 
   const characterCategories = useMemo(
@@ -131,16 +161,18 @@ export default function Timeline() {
   const sortedMetrics = useMemo(
     () =>
       metrics
-        .filter((metric) => String(metric.tab_id) === String(tabId))
+        .filter((metric) => String(metric.tab_id) === String(tabId) && String(metric.sub_tab_id) === String(activeSubTab?.id))
         .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0)),
-    [metrics, tabId]
+    [metrics, tabId, activeSubTab]
   );
   const sortedEventTypes = useMemo(
     () =>
       eventTypes
-        .filter((eventType) => String(eventType.tab_id) === String(tabId))
+        .filter(
+          (eventType) => String(eventType.tab_id) === String(tabId) && String(eventType.sub_tab_id) === String(activeSubTab?.id)
+        )
         .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0)),
-    [eventTypes, tabId]
+    [eventTypes, tabId, activeSubTab]
   );
   const eventTypeById = useMemo(
     () => new Map(sortedEventTypes.map((eventType) => [String(eventType.id), eventType])),
@@ -154,6 +186,11 @@ export default function Timeline() {
   const getEventType = (event) => eventTypeById.get(String(event?.event_type_id)) || null;
 
   useEffect(() => {
+    defaultMetricSeededRef.current = false;
+  }, [activeSubTab?.id]);
+
+  useEffect(() => {
+    if (!activeSubTab?.id) return;
     if (loadingMetrics) return;
     if (sortedMetrics.length > 0) return;
     if (defaultMetricSeededRef.current) return;
@@ -163,18 +200,20 @@ export default function Timeline() {
     dataClient.entities.Metric.create({
       name: DEFAULT_METRIC_NAME,
       tab_id: tabId,
+      sub_tab_id: activeSubTab?.id,
       sort_order: 0,
       is_default: true,
     }).then(() => {
       queryClient.invalidateQueries({ queryKey: ['metrics'] });
     });
-  }, [loadingMetrics, queryClient, sortedMetrics.length, tabId]);
+  }, [loadingMetrics, queryClient, sortedMetrics.length, tabId, activeSubTab]);
 
   const createEvent = useMutation({
     mutationFn: (data) =>
       dataClient.entities.Event.create({
         ...data,
         tab_id: tabId,
+        sub_tab_id: activeSubTab?.id,
         sort_order: tabEvents.length,
         created_at: new Date().toISOString(),
       }),
@@ -235,6 +274,7 @@ export default function Timeline() {
       dataClient.entities.Metric.create({
         name,
         tab_id: tabId,
+        sub_tab_id: activeSubTab?.id,
         sort_order: sortedMetrics.length,
         is_default: false,
       }),
@@ -267,6 +307,7 @@ export default function Timeline() {
         name,
         color,
         tab_id: tabId,
+        sub_tab_id: activeSubTab?.id,
         sort_order: sortedEventTypes.length,
       }),
     onSuccess: () => {
@@ -329,7 +370,7 @@ export default function Timeline() {
     setDragOverEventId(null);
   };
 
-  if (loadingTabs || loadingEvents || loadingCategories || loadingCharacters || loadingMetrics || loadingEventTypes) {
+  if (loadingTabs || loadingSubTabs || loadingEvents || loadingCategories || loadingCharacters || loadingMetrics || loadingEventTypes) {
     return (
       <div className="fixed inset-0 flex items-center justify-center bg-[radial-gradient(circle_at_top,rgba(96,165,250,0.14),transparent_26%),linear-gradient(180deg,#223247_0%,#172131_100%)] text-foreground">
         <div className="w-8 h-8 border-4 border-primary/20 border-t-primary rounded-full animate-spin" />
@@ -342,7 +383,7 @@ export default function Timeline() {
       <div className="min-h-screen bg-[radial-gradient(circle_at_top,rgb(255, 0, 0),transparent_26%),linear-gradient(180deg,#223247_0%,#172131_100%)] text-slate-100">
         <header className="sticky top-0 z-10 border-b border-slate-700/60 bg-slate-950/35 backdrop-blur-sm">
           <div className="mx-auto flex max-w-[1500px] items-center gap-3 px-4 py-4 sm:px-6">
-            <Button type="button" variant="ghost" size="icon" onClick={() => navigate('/', { state: { activeTabId: tabId } })}>
+            <Button type="button" variant="ghost" size="icon" onClick={() => navigate('/', { state: buildReturnState(tabId, activeSubTabId) })}>
               <ArrowLeft className="w-5 h-5" />
             </Button>
             <div>
@@ -364,12 +405,12 @@ export default function Timeline() {
     );
   }
 
-  if (!tabId || !activeTab) {
+  if (!tabId || !activeTab || !activeSubTab) {
     return (
       <div className="min-h-screen bg-[radial-gradient(circle_at_top,rgba(255, 0, 0, 0.1),transparent_28%),linear-gradient(180deg,#223247_0%,#172131_100%)] text-slate-100">
         <header className="sticky top-0 z-10 border-b border-slate-700/60 bg-slate-950/35 backdrop-blur-sm">
           <div className="mx-auto flex max-w-[1500px] items-center gap-3 px-4 py-4 sm:px-6">
-            <Button type="button" variant="ghost" size="icon" onClick={() => navigate('/', { state: { activeTabId: tabId } })}>
+            <Button type="button" variant="ghost" size="icon" onClick={() => navigate('/', { state: buildReturnState(tabId, activeSubTabId) })}>
               <ArrowLeft className="w-5 h-5" />
             </Button>
             <div>
@@ -396,19 +437,37 @@ export default function Timeline() {
       <header className="sticky top-0 z-10 border-b border-slate-700/60 bg-slate-950/35 backdrop-blur-sm">
         <div className="mx-auto flex max-w-[1500px] items-center justify-between gap-4 px-4 py-4 sm:px-6">
           <div className="flex items-center gap-3">
-            <Button type="button" variant="ghost" size="icon" onClick={() => navigate('/', { state: { activeTabId: tabId } })}>
+            <Button type="button" variant="ghost" size="icon" onClick={() => navigate('/', { state: buildReturnState(tabId, activeSubTabId) })}>
               <ArrowLeft className="w-5 h-5" />
             </Button>
             <div>
               <h1 className="font-heading text-2xl font-bold tracking-tight">Timeline</h1>
-              <p className="text-sm text-muted-foreground">Track major beats, arcs, and world events for this tab.</p>
+              <p className="text-sm text-muted-foreground">Track major beats, arcs, and world events for this sub-tab.</p>
             </div>
           </div>
           <div className="hidden sm:flex items-center gap-2 rounded-full border border-slate-600/60 bg-slate-900/40 px-3 py-1.5 text-sm text-slate-300">
             <Clock3 className="w-4 h-4" />
-            {activeTab.name}
+            {activeTab.name} / {activeSubTab.name}
           </div>
         </div>
+        {activeSubTabs.length > 1 && (
+          <div className="mx-auto flex max-w-[1500px] items-center gap-2 overflow-x-auto px-4 pb-4 sm:px-6">
+            {activeSubTabs.map((subTab) => (
+              <button
+                key={subTab.id}
+                type="button"
+                onClick={() => setActiveSubTabId(subTab.id)}
+                className={`rounded-full px-3 py-1.5 text-sm transition-colors ${
+                  String(activeSubTab?.id) === String(subTab.id)
+                    ? 'bg-rose-500 text-white'
+                    : 'bg-slate-900/55 text-slate-300 hover:bg-slate-800'
+                }`}
+              >
+                {subTab.name}
+              </button>
+            ))}
+          </div>
+        )}
       </header>
 
       <main className="mx-auto grid max-w-[1500px] gap-6 px-4 py-6 sm:px-6 xl:grid-cols-[minmax(0,1fr)_320px]">
@@ -417,9 +476,9 @@ export default function Timeline() {
             <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
               <div>
                 <div className="text-xs font-semibold uppercase tracking-[0.22em] text-slate-400">Current Timeline</div>
-                <h2 className="mt-2 font-heading text-3xl font-bold tracking-tight">{activeTab.name}</h2>
+                <h2 className="mt-2 font-heading text-3xl font-bold tracking-tight">{activeSubTab.name}</h2>
                 <p className="mt-2 text-sm text-slate-400">
-                  {tabEvents.length} event{tabEvents.length === 1 ? '' : 's'} in this tab.
+                  {tabEvents.length} event{tabEvents.length === 1 ? '' : 's'} in {activeTab.name} / {activeSubTab.name}.
                 </p>
               </div>
               <Button type="button" className="gap-2 self-start sm:self-auto" onClick={() => setCreateDialogOpen(true)}>
@@ -438,7 +497,7 @@ export default function Timeline() {
                     <CalendarDays className="mx-auto h-10 w-10 text-slate-500" />
                     <h3 className="mt-4 text-xl font-semibold">No events yet</h3>
                     <p className="mt-2 text-sm text-slate-400">
-                      Start by adding a major event, reveal, milestone, or turning point for {activeTab.name}.
+                      Start by adding a major event, reveal, milestone, or turning point for {activeTab.name} / {activeSubTab.name}.
                     </p>
                   </div>
                 </div>
@@ -710,7 +769,7 @@ export default function Timeline() {
         open={createDialogOpen}
         onClose={setCreateDialogOpen}
         onSubmit={(data) => createEvent.mutate(data)}
-        tabName={activeTab.name}
+        tabName={`${activeTab.name} / ${activeSubTab.name}`}
         metrics={sortedMetrics}
         eventTypes={sortedEventTypes}
         characterCategories={characterCategories}
@@ -727,7 +786,7 @@ export default function Timeline() {
           if (!editingEvent) return;
           updateEvent.mutate({ id: editingEvent.id, data });
         }}
-        tabName={activeTab.name}
+        tabName={`${activeTab.name} / ${activeSubTab.name}`}
         editData={editingEvent}
         metrics={sortedMetrics}
         eventTypes={sortedEventTypes}

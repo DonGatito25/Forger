@@ -16,6 +16,7 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
 import { Button } from '@/components/ui/button';
+import { buildReturnState, getScopedSubTabs } from '@/lib/subtabs';
 
 const buildConceptTree = (concepts, parentId = null) =>
   concepts
@@ -207,6 +208,7 @@ export default function Concepts() {
   const returnTabAppliedRef = useRef(false);
 
   const [activeTabId, setActiveTabId] = useState(null);
+  const [activeSubTabId, setActiveSubTabId] = useState(null);
   const [expandedDetails, setExpandedDetails] = useState({});
   const [selectedRootConceptId, setSelectedRootConceptId] = useState(null);
   const [dialogState, setDialogState] = useState({ open: false, editData: null, parentConcept: null });
@@ -218,6 +220,10 @@ export default function Concepts() {
     queryKey: ['tabs'],
     queryFn: () => dataClient.entities.Tab.list('sort_order'),
   });
+  const { data: subTabs = [], isLoading: loadingSubTabs } = useQuery({
+    queryKey: ['sub-tabs'],
+    queryFn: () => dataClient.entities.SubTab.list('sort_order'),
+  });
 
   const { data: concepts = [], isLoading: loadingConcepts } = useQuery({
     queryKey: ['concepts'],
@@ -225,12 +231,19 @@ export default function Concepts() {
   });
 
   useEffect(() => {
+    if (tabs.length > 0 && !activeTabId) {
+      setActiveTabId(tabs[0].id);
+    }
+  }, [tabs, activeTabId]);
+
+  useEffect(() => {
     const requestedTabId = location.state?.activeTabId;
+    const requestedSubTabId = location.state?.activeSubTabId;
     if (!requestedTabId) {
       returnTabAppliedRef.current = false;
       return;
     }
-    if (tabs.length === 0) return;
+    if (tabs.length === 0 || subTabs.length === 0) return;
     if (returnTabAppliedRef.current) return;
     if (!tabs.some((tab) => String(tab.id) === String(requestedTabId))) return;
 
@@ -238,17 +251,38 @@ export default function Concepts() {
     if (String(activeTabId) !== String(requestedTabId)) {
       setActiveTabId(requestedTabId);
     }
+    const requestedSubTab = getScopedSubTabs(subTabs, requestedTabId).find(
+      (subTab) => String(subTab.id) === String(requestedSubTabId)
+    );
+    if (requestedSubTab && String(activeSubTabId) !== String(requestedSubTab.id)) {
+      setActiveSubTabId(requestedSubTab.id);
+    }
     navigate(location.pathname, { replace: true, state: null });
-  }, [location.state, tabs, activeTabId, navigate, location.pathname]);
+  }, [location.state, tabs, subTabs, activeTabId, activeSubTabId, navigate, location.pathname]);
 
   const activeTab = useMemo(
     () => tabs.find((tab) => String(tab.id) === String(activeTabId)) || null,
     [tabs, activeTabId]
   );
+  const activeSubTabs = useMemo(() => getScopedSubTabs(subTabs, activeTabId), [subTabs, activeTabId]);
+  const activeSubTab = useMemo(
+    () => activeSubTabs.find((subTab) => String(subTab.id) === String(activeSubTabId)) || activeSubTabs[0] || null,
+    [activeSubTabs, activeSubTabId]
+  );
+
+  useEffect(() => {
+    if (!activeTabId || activeSubTabs.length === 0) return;
+    if (activeSubTab && String(activeSubTabId) === String(activeSubTab.id)) return;
+    setActiveSubTabId(activeSubTabs[0].id);
+  }, [activeTabId, activeSubTabs, activeSubTab, activeSubTabId]);
 
   const tabConcepts = useMemo(
-    () => concepts.filter((concept) => String(concept.tab_id) === String(activeTabId)),
-    [concepts, activeTabId]
+    () =>
+      concepts.filter(
+        (concept) =>
+          String(concept.tab_id) === String(activeTabId) && String(concept.sub_tab_id) === String(activeSubTab?.id)
+      ),
+    [concepts, activeTabId, activeSubTab]
   );
 
   const conceptTree = useMemo(() => buildConceptTree(tabConcepts), [tabConcepts]);
@@ -275,6 +309,7 @@ export default function Concepts() {
       return dataClient.entities.Concept.create({
         ...data,
         tab_id: activeTabId,
+        sub_tab_id: activeSubTab?.id,
         parent_id: parentConcept?.id || null,
         sort_order: siblings.length,
       });
@@ -422,7 +457,7 @@ export default function Concepts() {
     }
   }, [conceptTree, selectedRootConceptId]);
 
-  if (loadingTabs || loadingConcepts) {
+  if (loadingTabs || loadingSubTabs || loadingConcepts) {
     return (
       <div className="fixed inset-0 flex items-center justify-center bg-[radial-gradient(circle_at_top,rgb(255, 0, 0),transparent_26%),linear-gradient(180deg,#223247_0%,#172131_100%)] text-foreground">
         <div className="h-8 w-8 animate-spin rounded-full border-4 border-primary/20 border-t-primary" />
@@ -435,7 +470,7 @@ export default function Concepts() {
       <div className="min-h-screen bg-[radial-gradient(circle_at_top,rgb(255, 0, 0),transparent_28%),linear-gradient(180deg,#223247_0%,#172131_100%)] text-slate-100">
         <header className="sticky top-0 z-10 border-b border-slate-700/60 bg-slate-950/35 backdrop-blur-sm">
           <div className="mx-auto flex max-w-[1500px] items-center gap-3 px-4 py-4 sm:px-6">
-            <Button type="button" variant="ghost" size="icon" onClick={() => navigate('/', { state: { activeTabId } })}>
+            <Button type="button" variant="ghost" size="icon" onClick={() => navigate('/', { state: buildReturnState(activeTabId, activeSubTabId) })}>
               <ArrowLeft className="w-5 h-5" />
             </Button>
             <div>
@@ -457,12 +492,12 @@ export default function Concepts() {
     );
   }
 
-  if (!activeTabId || !activeTab) {
+  if (!activeTabId || !activeTab || !activeSubTab) {
     return (
       <div className="min-h-screen bg-[radial-gradient(circle_at_top,rgb(255, 0, 0),transparent_24%),linear-gradient(180deg,#223247_0%,#172131_100%)] text-slate-100">
         <header className="sticky top-0 z-10 border-b border-slate-700/60 bg-slate-950/35 backdrop-blur-sm">
           <div className="mx-auto flex max-w-[1500px] items-center gap-3 px-4 py-4 sm:px-6">
-            <Button type="button" variant="ghost" size="icon" onClick={() => navigate('/', { state: { activeTabId } })}>
+            <Button type="button" variant="ghost" size="icon" onClick={() => navigate('/', { state: buildReturnState(activeTabId, activeSubTabId) })}>
               <ArrowLeft className="w-5 h-5" />
             </Button>
             <div>
@@ -489,15 +524,33 @@ export default function Concepts() {
       <header className="sticky top-0 z-10 border-b border-slate-700/60 bg-slate-950/35 backdrop-blur-sm">
         <div className="mx-auto flex max-w-[1500px] items-center gap-4 px-4 py-4 sm:px-6">
           <div className="flex items-center gap-3">
-            <Button type="button" variant="ghost" size="icon" onClick={() => navigate('/', { state: { activeTabId } })}>
+            <Button type="button" variant="ghost" size="icon" onClick={() => navigate('/', { state: buildReturnState(activeTabId, activeSubTabId) })}>
               <ArrowLeft className="w-5 h-5" />
             </Button>
             <div>
               <h1 className="font-heading text-2xl font-bold tracking-tight">Concepts</h1>
-              <p className="text-sm text-slate-400">Define the ideas, rules, doctrines, systems, and abstractions behind each tab.</p>
+              <p className="text-sm text-slate-400">Define the ideas, rules, doctrines, systems, and abstractions behind each sub-tab.</p>
             </div>
           </div>
         </div>
+        {activeSubTabs.length > 1 && (
+          <div className="mx-auto flex max-w-[1500px] items-center gap-2 overflow-x-auto px-4 pb-4 sm:px-6">
+            {activeSubTabs.map((subTab) => (
+              <button
+                key={subTab.id}
+                type="button"
+                onClick={() => setActiveSubTabId(subTab.id)}
+                className={`rounded-full px-3 py-1.5 text-sm transition-colors ${
+                  String(activeSubTab?.id) === String(subTab.id)
+                    ? 'bg-sky-500 text-white'
+                    : 'bg-slate-900/55 text-slate-300 hover:bg-slate-800'
+                }`}
+              >
+                {subTab.name}
+              </button>
+            ))}
+          </div>
+        )}
       </header>
 
       <main className="mx-auto max-w-[1500px] px-4 py-6 sm:px-6">
@@ -508,7 +561,7 @@ export default function Concepts() {
                 <div>
                   <div className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">Root Concepts</div>
                   <div className="mt-2 text-sm text-slate-400">
-                    {conceptTree.length} root thread{conceptTree.length === 1 ? '' : 's'} in {activeTab.name}
+                    {conceptTree.length} root thread{conceptTree.length === 1 ? '' : 's'} in {activeTab.name} / {activeSubTab.name}
                   </div>
                 </div>
                 <Button
@@ -569,9 +622,9 @@ export default function Concepts() {
           <section className="rounded-[32px] border border-slate-700/70 bg-slate-900/30 p-5 shadow-sm sm:p-6">
             <div className="border-b border-slate-700/60 pb-5">
               <div className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-400">Concept Canvas</div>
-              <h2 className="mt-2 font-heading text-3xl font-bold tracking-tight">{activeTab.name}</h2>
+              <h2 className="mt-2 font-heading text-3xl font-bold tracking-tight">{activeSubTab.name}</h2>
               <p className="mt-2 text-sm text-slate-400">
-                Focus on one root concept at a time while keeping its whole sub-tree visible.
+                {activeTab.name} / {activeSubTab.name}. Focus on one root concept at a time while keeping its whole sub-tree visible.
               </p>
             </div>
 
@@ -633,7 +686,7 @@ export default function Concepts() {
         onSubmit={handleDialogSubmit}
         editData={dialogState.editData}
         parentConcept={dialogState.parentConcept}
-        tabName={activeTab?.name}
+        tabName={activeTab && activeSubTab ? `${activeTab.name} / ${activeSubTab.name}` : activeTab?.name}
         submitting={createConcept.isPending || updateConcept.isPending}
       />
 
